@@ -1,961 +1,1060 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>🌸 打刻Web Luckyスロット</title>
-  <style>
-    :root {
-      --bg: #f1f5f9;
-      --card: #ffffff;
-      --text: #1e293b;
-      --muted: #64748b;
-      --border: #e2e8f0;
-      --primary: #1e40af;
-      --primary-light: #dbeafe;
-      --ok: #16a34a;
-      --warn: #d97706;
-      --danger: #dc2626;
-      --radius: 14px;
-    }
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>🌸 Pokémon GO 奈良 打刻Web Luckyスロット</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" defer></script>
+<style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; padding: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f1f5f9; color: #0f172a;
+  overflow-x: hidden; touch-action: manipulation;
+  overflow-anchor: none;
+}
 
-    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      padding-bottom: 48px;
-    }
+/* ヘッダー＆接続ボタン（ホストの確認済み背景色と自動連動） */
+.top-header {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  background: #1e3a8a; color: #ffffff;
+  padding: 8px 10px; border-radius: 10px; margin-bottom: 8px;
+  transition: background-color 0.25s ease, color 0.25s ease;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+}
+.top-header.light-bg { color: #0f172a; }
+.top-title { font-size: 0.92rem; font-weight: 800; line-height: 1.2; flex: 1; min-width: 0; }
+.header-right { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.final-badge {
+  background: #facc15; color: #713f12;
+  font-size: 0.68rem; font-weight: 900;
+  padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+}
+.conn-btn {
+  background: rgba(255,255,255,0.2); color: inherit;
+  border: 1px solid rgba(255,255,255,0.45); border-radius: 8px;
+  padding: 4px 8px; font-size: 0.72rem; font-weight: 800;
+  cursor: pointer; white-space: nowrap;
+}
+.top-header.light-bg .conn-btn {
+  background: rgba(255,255,255,0.78);
+  border-color: rgba(15,23,42,0.28);
+  color: #0f172a;
+}
+.conn-btn.disconnected,
+.top-header.light-bg .conn-btn.disconnected {
+  background: #dc2626; border-color: #fca5a5; color: #ffffff;
+}
 
-    /* ヘッダー（ホストの確認済み背景色と自動連動） */
-    .app-header {
-      position: sticky;
-      top: 0;
-      z-index: 40;
-      background: #1e3a8a;
-      color: #ffffff;
-      padding: 10px 12px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
-      transition: background-color 0.25s ease, color 0.25s ease;
-    }
-    .app-header.header-dark-text {
-      color: #1e293b;
-      border-bottom: 1px solid rgba(15, 23, 42, 0.14);
-    }
-    .header-left {
-      min-width: 0;
-      flex: 1;
-    }
-    .app-title {
-      font-size: 15px;
-      font-weight: 800;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      line-height: 1.25;
-    }
-    .sync-badge {
-      font-size: 11px;
-      opacity: 0.85;
-      margin-top: 2px;
-    }
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .hdr-btn {
-      border: 1px solid rgba(255, 255, 255, 0.35);
-      background: rgba(255, 255, 255, 0.18);
-      color: inherit;
-      border-radius: 10px;
-      padding: 6px 10px;
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      min-height: 36px;
-    }
-    .app-header.header-dark-text .hdr-btn {
-      border-color: rgba(15, 23, 42, 0.22);
-      background: rgba(255, 255, 255, 0.65);
-    }
+/* ページ切替タブ */
+.nav-tabs {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;
+}
+.nav-btn {
+  padding: 11px 6px; font-size: 0.92rem; font-weight: 800;
+  border: 2px solid #cbd5e1; border-radius: 10px;
+  background: #ffffff; color: #334155; cursor: pointer;
+}
+.nav-btn.active {
+  background: #2563eb; color: #ffffff; border-color: #1d4ed8;
+  box-shadow: 0 2px 6px rgba(37,99,235,0.3);
+}
 
-    .container {
-      max-width: 680px;
-      margin: 0 auto;
-      padding: 10px 10px 0;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+/* スキャナー入力行＆カメラ・NFC操作行＆🚨ロック時スタイル */
+.scan-box {
+  background: #ffffff; border: 2px solid #93c5fd; border-radius: 10px;
+  padding: 8px; margin-bottom: 8px; transition: background-color 0.2s, border-color 0.2s;
+}
+.scan-box.alert-locked {
+  background: #fef2f2; border-color: #dc2626;
+}
+.scan-row { display: flex; gap: 6px; align-items: center; }
+.scan-input {
+  flex: 1; padding: 11px 10px; font-size: 1rem; font-weight: bold;
+  border: 2px solid #cbd5e1; border-radius: 8px; min-width: 0;
+  background: #ffffff; color: #0f172a;
+}
+.scan-input:focus { outline: none; border-color: #2563eb; background: #eff6ff; }
+.scan-input:disabled {
+  background: #fee2e2; color: #991b1b; border-color: #f87171;
+  opacity: 1; -webkit-text-fill-color: #991b1b; cursor: not-allowed;
+}
+.kb-btn {
+  padding: 10px 10px; font-size: 0.82rem; font-weight: 800;
+  border-radius: 8px; border: 2px solid #cbd5e1;
+  background: #f8fafc; color: #334155; cursor: pointer; white-space: nowrap;
+}
+.kb-btn.on { background: #f59e0b; color: #ffffff; border-color: #d97706; }
+.kb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.send-btn {
+  padding: 10px 12px; font-size: 0.85rem; font-weight: 800;
+  border-radius: 8px; border: none; background: #2563eb; color: #fff;
+  cursor: pointer; white-space: nowrap;
+}
+.send-btn:disabled { background: #94a3b8; cursor: not-allowed; }
 
-    .card {
-      background: var(--card);
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      padding: 12px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-    }
+/* スマホカメラQR＆NFCボタン行 */
+.device-tools-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px;
+}
+.tool-btn {
+  padding: 10px 8px; font-size: 0.86rem; font-weight: 900;
+  border-radius: 8px; border: 2px solid #cbd5e1;
+  background: #f8fafc; color: #1e293b; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+}
+.tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tool-btn.qr-active {
+  background: #0284c7; color: #ffffff; border-color: #0369a1;
+  box-shadow: 0 2px 6px rgba(2,132,199,0.35);
+}
+@keyframes nfcPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(22, 163, 74, 0); }
+}
+.tool-btn.nfc-active {
+  background: #16a34a; color: #ffffff; border-color: #15803d;
+  animation: nfcPulse 1.5s infinite;
+}
 
-    /* 🚨 重要通知ロックバナー */
-    .alert-banner {
-      display: none;
-      border-radius: var(--radius);
-      padding: 14px;
-      text-align: center;
-      border: 3px solid #dc2626;
-      animation: alertFlash 0.65s infinite alternate;
-    }
-    .alert-banner.active { display: block; }
-    @keyframes alertFlash {
-      from { background: #fef08a; color: #7f1d1d; }
-      to   { background: #dc2626; color: #ffffff; }
-    }
-    .alert-title { font-size: 18px; font-weight: 900; margin-bottom: 6px; }
-    .alert-detail { font-size: 15px; font-weight: 700; margin-bottom: 10px; word-break: break-all; }
-    .btn-alert-unlock {
-      width: 100%;
-      padding: 12px;
-      font-size: 15px;
-      font-weight: 800;
-      border-radius: 10px;
-      border: 2px solid #ffffff;
-      background: #111827;
-      color: #ffffff;
-      cursor: pointer;
-    }
-    .btn-alert-unlock.step2 {
-      background: #15803d;
-    }
+/* カメラQRプレビュー枠（状態別の枠色＋インカメラ鏡像対応） */
+.qr-reader-panel {
+  display: none; margin-top: 8px;
+  background: #0f172a; border-radius: 10px; overflow: hidden;
+  border: 3px solid #22c55e; position: relative;
+  transition: border-color 0.2s ease;
+}
+.qr-reader-panel.cam-fast { border-color: #06b6d4; }
+.qr-reader-panel.cam-busy { border-color: #f59e0b; }
+.qr-reader-panel.cam-locked { border-color: #ef4444; }
+.qr-video-wrap {
+  position: relative; width: 100%; height: 220px; background: #000000;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+#qr-video {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+/* インカメラ時のみ映像を左右反転（鏡像表示・QR解析は生映像で正常読取） */
+.qr-video-wrap.is-front-cam #qr-video {
+  -webkit-transform: scaleX(-1) translateZ(0);
+  transform: scaleX(-1) translateZ(0);
+}
+.qr-reticle {
+  position: absolute; width: 165px; height: 165px;
+  border: 3px solid rgba(250, 204, 21, 0.9); border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.qr-bar {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  padding: 7px 9px; background: #1e293b; color: #f8fafc; font-size: 0.82rem; font-weight: 800;
+}
+.qr-status-label {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qr-mini-btn {
+  padding: 6px 10px; font-size: 0.78rem; font-weight: 800;
+  border-radius: 6px; border: 1px solid #64748b;
+  background: #334155; color: #ffffff; cursor: pointer; white-space: nowrap;
+}
+.qr-mini-btn.on { background: #eab308; color: #0f172a; border-color: #facc15; }
+.nfc-status-bar {
+  display: none; margin-top: 6px; padding: 6px 10px; border-radius: 8px;
+  background: #dcfce7; border: 1px solid #86efac; color: #166534;
+  font-size: 0.78rem; font-weight: 800; text-align: center;
+}
 
-    /* スロット枠 */
-    .slot-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
-    }
-    .slot-title-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-weight: 800;
-      font-size: 14px;
-    }
-    .mode-pill {
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: #e0e7ff;
-      color: #3730a3;
-    }
-    .mode-pill.fair { background: #fce7f3; color: #9d174d; }
-    .mode-pill.off  { background: #dcfce7; color: #166534; }
+/* スロットマシン枠（ON/OFF 折りたたみ対応） */
+.slot-card {
+  background: linear-gradient(135deg, #0f172a, #1e293b);
+  color: #ffffff; border-radius: 12px; padding: 10px;
+  margin-bottom: 8px; text-align: center; cursor: pointer;
+  border: 2px solid #f59e0b; position: relative; user-select: none;
+}
+.slot-card.slot-disabled-card {
+  background: linear-gradient(135deg, #064e3b, #065f46);
+  border-color: #34d399;
+  padding: 8px 10px;
+  cursor: default;
+}
+.slot-header {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  font-size: 0.78rem; color: #fde68a; font-weight: bold; margin-bottom: 6px;
+}
+.slot-card.slot-disabled-card .slot-header {
+  margin-bottom: 0;
+  color: #d1fae5;
+}
+.slot-header-btns {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+}
+.mute-btn {
+  background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; padding: 3px 8px; font-size: 0.75rem; font-weight: bold; cursor: pointer;
+  white-space: nowrap;
+}
+.slot-power-btn {
+  background: rgba(59,130,246,0.35); color: #ffffff; border: 1px solid rgba(147,197,253,0.7);
+  border-radius: 6px; padding: 3px 8px; font-size: 0.75rem; font-weight: 800; cursor: pointer;
+  white-space: nowrap;
+}
+.slot-power-btn.is-off {
+  background: #10b981; color: #052e16; border-color: #6ee7b7;
+}
+.reels {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  margin-bottom: 6px;
+}
+.reel {
+  background: #ffffff; color: #0f172a; border-radius: 8px;
+  height: 62px; display: flex; align-items: center; justify-content: center;
+  font-size: 2rem; font-weight: 900; border: 3px solid #fbbf24;
+  overflow: hidden;
+}
+.reel.legacy-base {
+  background: #222; color: #ffffff;
+  border: 2px solid #555;
+  font-size: 2rem; font-weight: bold;
+}
+.reel.legacy-7 {
+  background: #222;
+  color: #ff3333;
+  text-shadow: 0 0 4px #ff0000;
+  border: 2px solid #555;
+  font-size: 2.2rem;
+  font-weight: 900;
+}
+.reel.legacy-bar {
+  background: #333;
+  color: #ffffff;
+  border: 2px solid #555;
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+.slot-msg { font-size: 0.9rem; font-weight: 800; min-height: 1.3em; color: #fef08a; }
 
-    .slot-controls {
-      display: flex;
-      gap: 6px;
-    }
-    .mini-btn {
-      border: 1px solid var(--border);
-      background: #f8fafc;
-      color: var(--text);
-      border-radius: 9px;
-      padding: 5px 10px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      min-height: 32px;
-    }
-    .mini-btn.on  { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
-    .mini-btn.off { background: #ecfdf5; border-color: #86efac; color: #15803d; }
+/* 直近の打刻・確認枠 ＆ 🚨永続フラッシュ */
+@keyframes alertFlash {
+  0%, 100% {
+    background-color: #ef4444;
+    border-color: #7f1d1d;
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.85);
+  }
+  50% {
+    background-color: #fef08a;
+    border-color: #dc2626;
+    box-shadow: 0 0 18px rgba(250, 204, 21, 0.9);
+  }
+}
+.recent-card {
+  background: #ffffff; border: 2px solid #cbd5e1; border-radius: 10px;
+  padding: 10px; margin-bottom: 8px; text-align: center;
+  user-select: none;
+}
+.recent-card.win { background: #fef9c3; border-color: #eab308; }
+.recent-card.dup { background: #fee2e2; border-color: #dc2626; }
+.recent-card.unreg { background: #fff7ed; border-color: #ea580c; }
+.recent-card.alert-flash {
+  animation: alertFlash 0.65s infinite;
+  border-width: 3px;
+  cursor: pointer;
+}
+.recent-label { font-size: 0.74rem; color: #64748b; font-weight: bold; margin-bottom: 3px; }
+.recent-card.alert-flash .recent-label { color: #0f172a; }
+.recent-name { font-size: 1.1rem; font-weight: 900; color: #0f172a; word-break: break-word; }
+.recent-name.red { color: #dc2626; }
+.recent-card.alert-flash .recent-name { color: #0f172a; }
+.recent-notif {
+  font-size: 1.02rem; font-weight: 900; margin-top: 4px; color: #047857;
+  white-space: pre-line; line-height: 1.35;
+}
+.recent-card.dup .recent-notif,
+.recent-card.unreg .recent-notif,
+.recent-card.alert-flash .recent-notif { color: #991b1b; }
+.alert-tap-hint {
+  display: none; margin-top: 6px; padding: 5px 10px;
+  border-radius: 999px; background: rgba(15, 23, 42, 0.92); color: #fef08a;
+  font-size: 0.74rem; font-weight: 900;
+}
+.recent-card.alert-flash .alert-tap-hint { display: inline-block; }
 
-    .reel-area {
-      background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-      border-radius: 12px;
-      padding: 12px 10px;
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      cursor: pointer;
-      border: 3px solid #f59e0b;
-      user-select: none;
-    }
-    .reel-area.spinning { border-color: #38bdf8; }
-    .reel-area.big-win  { border-color: #f43f5e; box-shadow: 0 0 18px rgba(244, 63, 94, 0.55); }
+/* 自動更新バー */
+.status-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 6px; gap: 6px;
+}
+.poll-btn {
+  padding: 7px 10px; font-size: 0.8rem; font-weight: 800;
+  border-radius: 8px; border: 1px solid #cbd5e1; background: #ecfdf5;
+  color: #065f46; cursor: pointer;
+}
+.poll-btn.paused { background: #fef3c7; color: #92400e; }
+.count-pill { font-size: 0.78rem; font-weight: 800; color: #334155; }
 
-    .reel-cell {
-      background: linear-gradient(180deg, #f8fafc 0%, #ffffff 50%, #e2e8f0 100%);
-      border-radius: 10px;
-      height: 76px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 40px;
-      font-weight: 900;
-      box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.16);
-      overflow: hidden;
-    }
-    .reel-cell.spin-blur {
-      filter: blur(1px);
-      transform: scale(1.04);
-    }
+/* テーブル共通 */
+.table-wrap {
+  background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px;
+  overflow: auto; -webkit-overflow-scrolling: touch;
+  max-height: 290px; margin-bottom: 10px; overflow-anchor: none;
+}
+table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+th {
+  position: sticky; top: 0; background: #e2e8f0; color: #1e293b;
+  padding: 6px 6px; text-align: left; font-weight: 800; border-bottom: 2px solid #cbd5e1;
+  white-space: nowrap; z-index: 2;
+}
+td {
+  padding: 6px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: middle;
+  white-space: nowrap;
+}
+.td-red { color: #dc2626; font-weight: 800; }
+.td-notif {
+  font-weight: 800; color: #b45309;
+  white-space: pre; line-height: 1.35;
+}
+.td-notif.alert { color: #dc2626; }
+.td-stamping { font-size: 0.74rem; color: #475569; }
+.row-canceled { opacity: 0.45; background: #f8fafc; }
+select.st-sel {
+  padding: 4px 2px; font-size: 0.78rem; font-weight: bold;
+  border-radius: 6px; border: 1px solid #94a3b8; background: #fff;
+}
+.done-btn {
+  padding: 5px 8px; font-size: 0.82rem; font-weight: 800;
+  border-radius: 6px; border: 1px solid #94a3b8;
+  background: #f1f5f9; color: #334155; cursor: pointer;
+}
+.done-btn.ok { background: #fde047; color: #713f12; border-color: #ca8a04; }
 
-    .slot-msg {
-      margin-top: 8px;
-      text-align: center;
-      font-size: 14px;
-      font-weight: 800;
-      min-height: 22px;
-      color: var(--primary);
-    }
-    .slot-msg.win { color: #be123c; font-size: 16px; }
-    .slot-msg.muted { color: var(--muted); font-weight: 600; font-size: 13px; }
+/* セクションカード（リスト専用ページ） */
+.section-card {
+  background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px;
+  padding: 10px; margin-bottom: 10px;
+}
+.section-title {
+  font-size: 0.84rem; font-weight: 900; color: #1e3a8a;
+  margin: 0 0 8px 0; padding-bottom: 5px; border-bottom: 1px solid #e2e8f0;
+}
+.btn-stack { display: flex; flex-direction: column; gap: 8px; }
+.action-btn {
+  width: 100%; padding: 12px 10px; font-size: 0.92rem; font-weight: 800;
+  border-radius: 10px; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+}
+.action-btn:active { transform: scale(0.98); }
+.btn-blue { background: #2563eb; color: #ffffff; }
+.btn-purple { background: #7c3aed; color: #ffffff; }
+.btn-green { background: #16a34a; color: #ffffff; }
+.btn-teal { background: #0d9488; color: #ffffff; }
+.btn-red { background: #dc2626; color: #ffffff; }
+.btn-sub { background: #f8fafc; color: #1e293b; border: 2px solid #cbd5e1; }
 
-    .slot-off-bar {
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      background: #ecfdf5;
-      border: 1px solid #86efac;
-      color: #166534;
-      border-radius: 10px;
-      padding: 8px 10px;
-      font-size: 13px;
-      font-weight: 800;
-    }
-    .slot-off-bar.active { display: flex; }
+/* コピー4列＆カスタムリンク横1列＆転記先3列 */
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.mini-btn {
+  padding: 10px 4px; font-size: 0.78rem; font-weight: 800;
+  border-radius: 8px; border: 1px solid #94a3b8;
+  background: #eff6ff; color: #1e40af; cursor: pointer; text-align: center;
+  text-decoration: none; display: flex; align-items: center; justify-content: center;
+}
+.mini-btn.link-btn { background: #ecfdf5; color: #065f46; border-color: #6ee7b7; }
+.custom-links-wrap {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cbd5e1;
+}
+.custom-links-label {
+  font-size: 0.74rem; font-weight: 800; color: #475569; margin-bottom: 5px;
+}
+.custom-links-row { display: grid; gap: 6px; }
+.custom-link-btn {
+  padding: 9px 4px; font-size: 0.8rem; font-weight: 800;
+  border-radius: 8px; border: 2px solid #a78bfa;
+  background: #f5f3ff; color: #5b21b6; text-decoration: none;
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.step-sub-label {
+  font-size: 0.76rem; font-weight: 800; color: #475569; margin: 2px 0 -2px 2px;
+}
 
-    /* 直近の打刻結果表示 */
-    .result-card {
-      padding: 10px 12px;
-      border-left: 5px solid var(--primary);
-    }
-    .result-card.is-ok   { border-left-color: var(--ok); }
-    .result-card.is-dup  { border-left-color: var(--warn); background: #fffbeb; }
-    .result-card.is-warn { border-left-color: var(--danger); background: #fef2f2; }
+/* モーダル共通 */
+.modal-bg {
+  display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.72);
+  z-index: 5000; align-items: center; justify-content: center; padding: 8px;
+}
+.modal-card {
+  background: #ffffff; border-radius: 12px; padding: 12px;
+  width: 100%; max-width: 540px;
+  max-height: 90vh; max-height: 90dvh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal-card.wide-modal {
+  max-width: 98vw; width: 98vw;
+  height: 92vh; height: 92dvh;
+  max-height: 92dvh;
+  padding: 10px;
+}
+.modal-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.modal-head h3 { margin: 0; font-size: 0.94rem; color: #1e3a8a; }
+.modal-scroll-body {
+  flex: 1; min-height: 0; overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.close-x {
+  background: #e2e8f0; border: none; border-radius: 6px;
+  padding: 6px 10px; font-weight: 800; cursor: pointer; flex-shrink: 0;
+}
+.form-row { margin-bottom: 10px; }
+.form-row label { display: block; font-size: 0.78rem; font-weight: 800; margin-bottom: 3px; }
+.form-row input, .form-row select {
+  width: 100%; padding: 8px; font-size: 0.9rem;
+  border: 1px solid #cbd5e1; border-radius: 6px;
+}
+.prob-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; align-items: center; }
+.prob-grid span { font-size: 0.78rem; font-weight: 800; }
 
-    .result-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .result-badge {
-      font-size: 11px;
-      font-weight: 800;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: #e2e8f0;
-      color: #334155;
-    }
-    .result-name {
-      font-size: 18px;
-      font-weight: 900;
-      margin-top: 4px;
-      word-break: break-all;
-    }
-    .result-notice {
-      font-size: 14px;
-      font-weight: 800;
-      color: #b91c1c;
-      margin-top: 2px;
-    }
-    .result-sub {
-      font-size: 12px;
-      color: var(--muted);
-      margin-top: 2px;
-    }
+/* ホスト別 確認済み背景色ピッカー（ヘッダー色とも連動） */
+.color-pick-row {
+  display: flex; align-items: center; gap: 8px;
+  background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px 8px;
+}
+.color-pick-row input[type="color"] {
+  width: 52px; height: 38px; padding: 2px; border: 1px solid #94a3b8; border-radius: 6px; cursor: pointer;
+}
+.color-pick-row input[type="text"] {
+  width: 110px; font-family: monospace; font-weight: 800;
+}
+.color-preview-chip {
+  flex: 1; padding: 7px 8px; border-radius: 6px; border: 1px solid #94a3b8;
+  font-size: 0.78rem; font-weight: 800; text-align: center; color: #0f172a;
+}
 
-    /* 入力・スキャンエリア */
-    .device-btn-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr auto;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .btn {
-      border: none;
-      border-radius: 11px;
-      padding: 11px 12px;
-      font-size: 14px;
-      font-weight: 800;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 5px;
-      min-height: 44px;
-    }
-    .btn-primary { background: #2563eb; color: #fff; }
-    .btn-primary.active { background: #dc2626; color: #fff; }
-    .btn-nfc     { background: #0f766e; color: #fff; }
-    .btn-nfc.active { background: #b45309; color: #fff; }
-    .btn-sub     { background: #e2e8f0; color: #1e293b; }
-    .btn-danger  { background: #dc2626; color: #fff; }
-    .btn-ok      { background: #16a34a; color: #fff; }
+/* 複数アプリ切替リスト */
+.app-switch-list {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px;
+}
+.app-switch-item {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid #cbd5e1; border-radius: 9px;
+  padding: 7px 9px; background: #f8fafc;
+}
+.app-switch-item.active {
+  border: 2px solid #2563eb; background: #eff6ff;
+}
+.app-color-dot {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid rgba(15, 23, 42, 0.35); flex-shrink: 0;
+}
+.app-switch-info {
+  flex: 1; min-width: 0; cursor: pointer;
+}
+.app-switch-name {
+  font-size: 0.85rem; font-weight: 900; color: #0f172a;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.app-switch-sub {
+  font-size: 0.7rem; color: #64748b;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.app-switch-acts {
+  display: flex; gap: 4px; flex-shrink: 0;
+}
+.app-mini-act {
+  padding: 5px 8px; font-size: 0.74rem; font-weight: 800;
+  border-radius: 6px; border: 1px solid #94a3b8;
+  background: #ffffff; color: #1e293b; cursor: pointer;
+}
+.app-mini-act.del {
+  background: #fee2e2; color: #dc2626; border-color: #fca5a5;
+}
+.modal-divider {
+  border: none; border-top: 1px dashed #cbd5e1; margin: 10px 0;
+}
 
-    /* カメラ枠 */
-    .camera-panel {
-      display: none;
-      margin-bottom: 10px;
-      border-radius: 12px;
-      overflow: hidden;
-      background: #0f172a;
-      border: 3px solid #22c55e;
-      transition: border-color 0.2s ease;
-    }
-    .camera-panel.active { display: block; }
-    .camera-panel.state-busy   { border-color: #f59e0b; }
-    .camera-panel.state-locked { border-color: #ef4444; }
-    .camera-panel.state-fast   { border-color: #06b6d4; }
+/* 項目別サウンド設定 */
+.sound-config-box {
+  background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px;
+  padding: 8px; display: flex; flex-direction: column; gap: 6px;
+}
+.sound-preset-bar {
+  display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 6px;
+  border-bottom: 1px dashed #cbd5e1; margin-bottom: 2px;
+}
+.sound-preset-btn {
+  flex: 1; padding: 7px 6px; font-size: 0.75rem; font-weight: 800;
+  border-radius: 6px; border: 1px solid #94a3b8;
+  background: #ffffff; color: #1e293b; cursor: pointer; white-space: nowrap;
+}
+.sound-preset-btn.legacy-btn {
+  background: #fef3c7; color: #92400e; border-color: #f59e0b;
+}
+.sound-config-row {
+  display: grid; grid-template-columns: 78px 1fr 64px; gap: 6px; align-items: center;
+}
+.sound-config-row span {
+  font-size: 0.78rem; font-weight: 800; color: #1e293b;
+}
+.sound-config-row select {
+  padding: 6px; font-size: 0.82rem; font-weight: 700;
+  border: 1px solid #94a3b8; border-radius: 6px; background: #ffffff;
+}
+.sound-preview-btn {
+  padding: 7px 4px; font-size: 0.76rem; font-weight: 800;
+  border-radius: 6px; border: 1px solid #93c5fd;
+  background: #eff6ff; color: #1d4ed8; cursor: pointer; white-space: nowrap;
+}
+.sound-preview-btn:active { background: #dbeafe; }
 
-    .camera-viewport {
-      position: relative;
-      width: 100%;
-      aspect-ratio: 4 / 3;
-      max-height: 300px;
-      background: #000;
-      overflow: hidden;
-    }
-    #cameraVideo {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-    /* インカメラ時だけ映像を鏡像表示（canvas解析は非反転で正常読取） */
-    #cameraVideo.mirrored {
-      transform: scaleX(-1);
-    }
-    .camera-guide {
-      position: absolute;
-      inset: 16% 20%;
-      border: 3px dashed rgba(255, 255, 255, 0.85);
-      border-radius: 14px;
-      pointer-events: none;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.22);
-    }
+/* 当選者管理 スプレッドシート全体表示テーブル */
+.winner-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-bottom: 6px; flex-shrink: 0;
+}
+.winner-stats {
+  font-size: 0.75rem; font-weight: 800; color: #065f46;
+  background: #d1fae5; padding: 4px 8px; border-radius: 6px;
+}
+.winner-jump-bar {
+  display: flex; gap: 5px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+  padding: 2px 0 6px 0; margin-bottom: 4px; flex-shrink: 0;
+}
+.jump-pill {
+  padding: 5px 9px; font-size: 0.75rem; font-weight: 800;
+  border-radius: 999px; border: 1px solid #99f6e4;
+  background: #f0fdfa; color: #115e59; cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.winner-table-wrap {
+  flex: 1; min-height: 0; overflow: auto;
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff;
+}
+table.winner-grid-table {
+  width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0;
+  font-size: 0.8rem;
+}
+table.winner-grid-table th {
+  position: sticky; top: 0; z-index: 3;
+  background: #1e3a8a; color: #ffffff;
+  border-right: 1px solid #3b82f6; border-bottom: 2px solid #1e40af;
+  padding: 7px 8px; min-width: 155px; max-width: 240px;
+  text-align: left; vertical-align: middle; white-space: normal;
+}
+table.winner-grid-table th.col-row-num {
+  left: 0; z-index: 4; min-width: 40px; max-width: 44px;
+  text-align: center; background: #0f172a;
+}
+table.winner-grid-table td {
+  border-right: 1px solid #cbd5e1; border-bottom: 1px solid #e2e8f0;
+  padding: 5px 6px; min-width: 155px; max-width: 240px;
+  vertical-align: middle; background: #ffffff; white-space: normal;
+}
+table.winner-grid-table td.col-row-num {
+  position: sticky; left: 0; z-index: 2;
+  min-width: 40px; max-width: 44px; text-align: center;
+  background: #f1f5f9; font-weight: 800; color: #475569;
+}
+.w-cell-inner {
+  display: flex; justify-content: space-between; align-items: center; gap: 4px;
+}
+.w-cell-txt {
+  font-weight: 700; word-break: break-all; line-height: 1.25; flex: 1; color: #0f172a;
+}
+.w-cell-acts { display: flex; gap: 3px; flex-shrink: 0; }
+.w-mini-act {
+  padding: 3px 6px; font-size: 0.72rem; font-weight: 800;
+  border-radius: 5px; border: 1px solid #94a3b8; background: #eff6ff; color: #1d4ed8; cursor: pointer;
+}
+.w-mini-act.del { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+.w-add-cell-btn {
+  width: 100%; padding: 6px 4px; font-size: 0.75rem; font-weight: 800;
+  border-radius: 6px; border: 1px dashed #94a3b8; background: #f8fafc;
+  color: #334155; cursor: pointer;
+}
 
-    /* ③-3: 赤い「✕閉じる」と「連続ON」を廃止し、状態表示＋切替＋ライトに整理 */
-    .camera-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 8px 10px;
-      background: #1e293b;
-      color: #ffffff;
-    }
-    .camera-status {
-      font-size: 14px;
-      font-weight: 800;
-      flex: 1;
-      min-width: 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .camera-bar-actions {
-      display: flex;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .cam-ctrl-btn {
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      background: rgba(255, 255, 255, 0.14);
-      color: #fff;
-      border-radius: 9px;
-      padding: 6px 11px;
-      font-size: 13px;
-      font-weight: 800;
-      cursor: pointer;
-      min-height: 36px;
-    }
-    .cam-ctrl-btn.lit {
-      background: #facc15;
-      color: #111827;
-      border-color: #facc15;
-    }
+/* GAS接続モーダル補足 */
+.conn-note {
+  background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+  padding: 8px 10px; font-size: 0.76rem; color: #1e3a8a; line-height: 1.45;
+  margin-bottom: 10px;
+}
+.conn-status-msg {
+  font-size: 0.8rem; font-weight: 800; margin-top: 6px; min-height: 1.2em;
+}
 
-    /* スキャナー・手入力フォーム */
-    .scan-form {
-      display: flex;
-      gap: 8px;
-    }
-    .scan-input {
-      flex: 1;
-      min-width: 0;
-      border: 2px solid #cbd5e1;
-      border-radius: 11px;
-      padding: 10px 12px;
-      font-size: 16px;
-      font-weight: 700;
-      outline: none;
-    }
-    .scan-input:focus { border-color: #2563eb; }
-    .scan-input:disabled { background: #f1f5f9; color: #94a3b8; }
-
-    /* サマリー */
-    .summary-strip {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      flex-wrap: wrap;
-      font-size: 12px;
-      font-weight: 700;
-    }
-    .stat-chips {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-    .stat-chip {
-      background: #f8fafc;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 4px 8px;
-    }
-    .stat-chip b { font-size: 14px; color: var(--primary); }
-    .stat-chip.alert b { color: var(--danger); }
-
-    /* 打刻ログリスト */
-    .log-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-top: 8px;
-    }
-    .log-item {
-      border: 1px solid var(--border);
-      border-radius: 11px;
-      padding: 9px 10px;
-      background: #ffffff;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .log-item.canceled { opacity: 0.55; background: #f8fafc; }
-    .log-item.has-notice { border-color: #f59e0b; background: #fffbeb; }
-    .log-item.confirmed-row { border-color: #86efac; background: #f0fdf4; }
-
-    .log-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-    }
-    .log-name { font-size: 15px; font-weight: 800; word-break: break-all; }
-    .log-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
-    .log-notice-line {
-      font-size: 13px;
-      font-weight: 800;
-      color: #b91c1c;
-    }
-    .log-controls {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-    .log-select {
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 5px 8px;
-      font-size: 12px;
-      font-weight: 700;
-      background: #fff;
-      min-height: 34px;
-    }
-    .btn-confirm {
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      color: #1e293b;
-      border-radius: 8px;
-      padding: 5px 12px;
-      font-size: 12px;
-      font-weight: 800;
-      cursor: pointer;
-      min-height: 34px;
-    }
-    .btn-confirm.done {
-      background: #16a34a;
-      color: #ffffff;
-      border-color: #16a34a;
-    }
-    .btn-del {
-      margin-left: auto;
-      border: 1px solid #fecaca;
-      background: #fef2f2;
-      color: #b91c1c;
-      border-radius: 8px;
-      padding: 5px 9px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      min-height: 34px;
-    }
-
-    /* モーダル共通 */
-    .modal-backdrop {
-      display: none;
-      position: fixed;
-      inset: 0;
-      z-index: 80;
-      background: rgba(15, 23, 42, 0.58);
-      padding: 14px;
-      overflow-y: auto;
-      align-items: flex-start;
-      justify-content: center;
-    }
-    .modal-backdrop.open { display: flex; }
-    .modal-box {
-      width: 100%;
-      max-width: 520px;
-      background: #ffffff;
-      border-radius: 16px;
-      padding: 16px;
-      margin: 16px auto;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
-    }
-    .modal-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 12px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--border);
-    }
-    .modal-head h2 { margin: 0; font-size: 16px; }
-    .modal-close {
-      border: none;
-      background: #e2e8f0;
-      border-radius: 8px;
-      padding: 6px 10px;
-      font-weight: 800;
-      cursor: pointer;
-    }
-    .field { margin-bottom: 12px; }
-    .field label {
-      display: block;
-      font-size: 12px;
-      font-weight: 800;
-      color: #334155;
-      margin-bottom: 4px;
-    }
-    .field input[type="text"],
-    .field input[type="url"],
-    .field input[type="number"],
-    .field select {
-      width: 100%;
-      border: 1px solid #cbd5e1;
-      border-radius: 9px;
-      padding: 9px 10px;
-      font-size: 14px;
-    }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-
-    /* 複数アプリ切替リスト */
-    .app-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-bottom: 14px;
-    }
-    .app-row {
-      border: 1px solid var(--border);
-      border-radius: 11px;
-      padding: 9px 10px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: #f8fafc;
-    }
-    .app-row.active {
-      border: 2px solid #2563eb;
-      background: #eff6ff;
-    }
-    .app-color-dot {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      border: 1px solid rgba(0, 0, 0, 0.25);
-      flex-shrink: 0;
-    }
-    .app-row-info {
-      flex: 1;
-      min-width: 0;
-      cursor: pointer;
-    }
-    .app-row-name {
-      font-size: 14px;
-      font-weight: 800;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .app-row-sub {
-      font-size: 11px;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .app-row-btns {
-      display: flex;
-      gap: 4px;
-      flex-shrink: 0;
-    }
-    .icon-btn {
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      border-radius: 8px;
-      padding: 5px 8px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      min-height: 32px;
-    }
-
-    /* 背景色スウォッチ＆プレビュー */
-    .swatch-row {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      flex-wrap: wrap;
-      margin-bottom: 8px;
-    }
-    .swatch {
-      width: 30px;
-      height: 30px;
-      border-radius: 50%;
-      border: 2px solid rgba(0, 0, 0, 0.18);
-      cursor: pointer;
-    }
-    .swatch.selected {
-      border: 3px solid #1d4ed8;
-      transform: scale(1.1);
-    }
-    .bg-preview {
-      border-radius: 10px;
-      padding: 8px 12px;
-      font-size: 13px;
-      font-weight: 800;
-      border: 1px solid rgba(0, 0, 0, 0.15);
-    }
-
-    .divider {
-      border: none;
-      border-top: 1px solid var(--border);
-      margin: 14px 0;
-    }
-    .hint {
-      font-size: 11px;
-      color: var(--muted);
-      line-height: 1.45;
-      margin-top: 4px;
-    }
-
-    /* トースト通知 */
-    .toast {
-      position: fixed;
-      left: 50%;
-      bottom: 20px;
-      transform: translateX(-50%) translateY(90px);
-      background: rgba(15, 23, 42, 0.92);
-      color: #ffffff;
-      padding: 10px 16px;
-      border-radius: 999px;
-      font-size: 13px;
-      font-weight: 700;
-      z-index: 120;
-      transition: transform 0.25s ease;
-      max-width: 92vw;
-      text-align: center;
-      pointer-events: none;
-    }
-    .toast.show { transform: translateX(-50%) translateY(0); }
-  </style>
+/* 処理中ロック＆トースト＆紙吹雪 */
+#busy-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.55);
+  z-index: 9000; align-items: center; justify-content: center;
+}
+.busy-box {
+  background: #ffffff; padding: 18px 22px; border-radius: 12px;
+  font-weight: 800; text-align: center; box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+}
+#toast {
+  visibility: hidden; position: fixed; left: 50%; bottom: 20px;
+  transform: translateX(-50%); background: rgba(15,23,42,0.95); color: #fff;
+  padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 800;
+  z-index: 9500; text-align: center; max-width: 90%;
+}
+#toast.show { visibility: visible; }
+#confetti-canvas {
+  position: fixed; inset: 0; pointer-events: none; z-index: 8500;
+}
+</style>
 </head>
 <body>
 
-  <!-- ヘッダー -->
-  <header id="appHeader" class="app-header">
-    <div class="header-left">
-      <div id="appTitleText" class="app-title">🌸 打刻Web Luckyスロット</div>
-      <div id="syncBadge" class="sync-badge">未接続</div>
+<canvas id="confetti-canvas"></canvas>
+<div id="toast"></div>
+<div id="busy-overlay"><div id="busy-msg" class="busy-box">⏳ 処理中です...</div></div>
+
+<!-- 上部ヘッダー（確認済み背景色と自動連動） -->
+<div class="top-header" id="top-header">
+  <div class="top-title" id="header-ss-name">🌸 Pokémon GO 奈良 打刻Web Luckyスロット</div>
+  <div class="header-right">
+    <span class="final-badge">QR/NFC版</span>
+    <button type="button" id="conn-btn" class="conn-btn" onclick="openGasUrlModal()">🔌 接続</button>
+  </div>
+</div>
+
+<!-- ページ切替タブ -->
+<div class="nav-tabs">
+  <button type="button" id="nav-scan" class="nav-btn active" onclick="switchPage('scan')">📱 スキャナー / 入力</button>
+  <button type="button" id="nav-list" class="nav-btn" onclick="switchPage('list')">📋 リスト専用ページ</button>
+</div>
+
+<!-- ==================== ページ1：スキャナー / 入力 ==================== -->
+<div id="page-scan">
+  <div class="scan-box" id="scan-box">
+    <div class="scan-row">
+      <input type="text" id="scan-input" class="scan-input" inputmode="none" autocomplete="off"
+        placeholder="スキャナー待機中（QR読取 / 会員番号）">
+      <button type="button" id="kb-toggle" class="kb-btn" onclick="toggleKeyboardMode()">⌨️OFF</button>
+      <button type="button" id="send-btn" class="send-btn" onclick="submitScanManual()">送信</button>
     </div>
-    <div class="header-actions">
-      <button id="btnConnect" class="hdr-btn" type="button">🔌 未接続</button>
-      <button id="btnSettings" class="hdr-btn" type="button" title="設定">⚙️</button>
-      <button id="btnAdmin" class="hdr-btn" type="button" title="締め・管理">📦</button>
+
+    <!-- スマホカメラQR ＆ NFCタグ読み取りボタン -->
+    <div class="device-tools-row">
+      <button type="button" id="qr-cam-btn" class="tool-btn" onclick="toggleCameraQr()">📷 カメラQR</button>
+      <button type="button" id="nfc-btn" class="tool-btn" onclick="toggleNfcReader()">📶 NFC読取</button>
     </div>
-  </header>
 
-  <main class="container">
+    <!-- NFC待機ステータス -->
+    <div id="nfc-status-bar" class="nfc-status-bar">📶 NFCタグ待機中：スマホ背面にタグをかざしてください</div>
 
-    <!-- 🚨 重要通知ロック -->
-    <section id="alertLockBanner" class="alert-banner" role="alert">
-      <div id="alertLockTitle" class="alert-title">🚨 重要通知あり（全入力ロック中）</div>
-      <div id="alertLockDetail" class="alert-detail">内容を確認してください</div>
-      <button id="btnAlertUnlock" class="btn-alert-unlock" type="button">確認しました（1回目タップ）</button>
-    </section>
-
-    <!-- スロットカード -->
-    <section id="slotCard" class="card">
-      <div class="slot-header">
-        <div class="slot-title-wrap">
-          <span>🎰 Luckyスロット</span>
-          <span id="slotModeBadge" class="mode-pill">通常</span>
-        </div>
-        <div class="slot-controls">
-          <button id="btnSlotToggle" class="mini-btn on" type="button">🎰 スロットON</button>
-          <button id="btnSoundToggle" class="mini-btn on" type="button">🔊 音ON</button>
+    <!-- カメラQRプレビュー枠（③-1〜③-3反映） -->
+    <div id="qr-reader-panel" class="qr-reader-panel">
+      <div class="qr-video-wrap" id="qr-video-wrap">
+        <video id="qr-video" playsinline muted autoplay></video>
+        <div class="qr-reticle"></div>
+        <canvas id="qr-canvas" style="display:none;"></canvas>
+      </div>
+      <div class="qr-bar">
+        <span id="qr-engine-label" class="qr-status-label">📷 読取OK</span>
+        <div style="display:flex; gap:5px; flex-shrink:0;">
+          <button type="button" id="qr-switch-btn" class="qr-mini-btn" onclick="switchCameraFacing()">🔄 切替</button>
+          <button type="button" id="qr-torch-btn" class="qr-mini-btn" style="display:none;" onclick="toggleQrTorch()">🔦</button>
         </div>
       </div>
+    </div>
+  </div>
 
-      <!-- スロットON時 -->
-      <div id="slotBody">
-        <div id="reelArea" class="reel-area" title="回転中にタップで即停止">
-          <div id="reel0" class="reel-cell">🌸</div>
-          <div id="reel1" class="reel-cell">7️⃣</div>
-          <div id="reel2" class="reel-cell">🌸</div>
-        </div>
-        <div id="slotMessage" class="slot-msg muted">QRスキャンで自動抽選（回転中タップで即停止）</div>
+  <!-- スロットマシン（ON / OFF 折りたたみ対応） -->
+  <div class="slot-card" id="slot-card" onclick="forceStopSlot()">
+    <div class="slot-header">
+      <span id="slot-mode-badge">🎰 打刻でGO Luckyスロット</span>
+      <div class="slot-header-btns">
+        <button type="button" id="slot-power-btn" class="slot-power-btn" onclick="event.stopPropagation(); toggleSlotPower();">🎰 スロットON</button>
+        <button type="button" id="mute-btn" class="mute-btn" onclick="event.stopPropagation(); toggleMute();">🔊 音ON</button>
       </div>
-
-      <!-- スロットOFF時（自動高速打刻モード） -->
-      <div id="slotOffBar" class="slot-off-bar">
-        <span>⚡ スロットOFF（高速打刻モード中）</span>
-        <button id="btnSlotTurnOn" class="mini-btn on" type="button">🎰 ONに戻す</button>
+    </div>
+    <div id="slot-reels-wrap">
+      <div class="reels">
+        <div class="reel" id="reel-0">7</div>
+        <div class="reel" id="reel-1">7</div>
+        <div class="reel" id="reel-2">7</div>
       </div>
-    </section>
+      <div class="slot-msg" id="slot-msg">打刻するとスロットが回ります！</div>
+    </div>
+  </div>
 
-    <!-- 直近の打刻結果 -->
-    <section id="resultCard" class="card result-card">
-      <div class="result-top">
-        <span id="resultStatusBadge" class="result-badge">待機中</span>
-        <span id="resultSub" class="result-sub"></span>
+  <!-- 直近の打刻・プレゼント確認枠 -->
+  <div class="recent-card" id="recent-card" onclick="handleAlertCardTap()">
+    <div class="recent-label">【直近の打刻・プレゼント確認】</div>
+    <div class="recent-name" id="recent-name">待機中...</div>
+    <div class="recent-notif" id="recent-notif"></div>
+    <div class="alert-tap-hint" id="alert-tap-hint">🔒 🚨確認後、枠を0.5秒以上あけて2回タップでロック解除</div>
+  </div>
+
+  <!-- 自動更新バー＆打刻履歴（A〜H全列表示） -->
+  <div class="status-bar">
+    <button type="button" id="poll-btn-1" class="poll-btn" onclick="togglePolling()">🟢 自動更新中</button>
+    <span class="count-pill" id="count-pill-1">打刻: 0件</span>
+  </div>
+  <div class="table-wrap" id="scan-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>A:Status</th><th>B:Done</th><th>C:Notif</th><th>D:Formatted</th>
+          <th>E:Stamping</th><th>F:Shiny</th><th>G:Event</th><th>H:Slot</th>
+        </tr>
+      </thead>
+      <tbody id="scan-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== ページ2：リスト専用ページ ==================== -->
+<div id="page-list" style="display:none;">
+  <div class="status-bar">
+    <button type="button" id="poll-btn-2" class="poll-btn" onclick="togglePolling()">🟢 自動更新中</button>
+    <span class="count-pill" id="count-pill-2">打刻: 0件</span>
+  </div>
+  <div class="table-wrap" id="list-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>A:Status</th><th>B:Done</th><th>C:Notif</th><th>D:Formatted</th>
+          <th>E:Stamping</th><th>F:Shiny</th><th>G:Event</th><th>H:Slot</th>
+        </tr>
+      </thead>
+      <tbody id="list-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- 1. 📊 データ参照・各種設定 -->
+  <div class="section-card">
+    <div class="section-title">📊 データ参照・各種設定</div>
+    <div class="btn-stack">
+      <button type="button" class="action-btn btn-blue" onclick="openFullLogModal()">👁️ 打刻ログ（全列 A〜H）を参照する</button>
+      <button type="button" class="action-btn btn-sub" onclick="openSettingsModal()">⚙️ スロット・アプリ設定</button>
+      <button type="button" class="action-btn btn-sub" onclick="openGasUrlModal()">🔌 接続先GAS URL設定（アプリ切替）</button>
+    </div>
+  </div>
+
+  <!-- 2. 📋 列データ簡単コピー ＋ 🔗 外部ツール・リンク -->
+  <div class="section-card">
+    <div class="section-title">📋 列データ簡単コピー（他スプレッドシート貼付用）</div>
+    <div class="grid-4">
+      <button type="button" class="mini-btn" onclick="copyColumnData('D')">D列コピー</button>
+      <button type="button" class="mini-btn" onclick="copyColumnData('E')">E列コピー</button>
+      <button type="button" class="mini-btn" onclick="copyColumnData('F')">F列コピー</button>
+      <button type="button" class="mini-btn" onclick="copyColumnData('G')">G列コピー</button>
+    </div>
+    <div id="custom-links-area" class="custom-links-wrap" style="display:none;">
+      <div class="custom-links-label">🔗 外部ツール・リンク（設定シートで編集可）</div>
+      <div id="custom-links-row" class="custom-links-row"></div>
+    </div>
+  </div>
+
+  <!-- 3. 📂 締め作業（連番ガイド付き） -->
+  <div class="section-card">
+    <div class="section-title">📂 締め作業（①前BK ➔ ②修正 ➔ ③転記＆後BK ➔ ④確認 ➔ ⑤当選者整理 ➔ ⑥初期化）</div>
+    <div class="btn-stack">
+      <button type="button" class="action-btn btn-purple" onclick="runPreBackup()">💾 ① 修正前BKを保存</button>
+      <button type="button" class="action-btn btn-sub" onclick="openLogEditModal()">🛠️ ② ログ管理・修正</button>
+      <button type="button" class="action-btn btn-green" onclick="runTransferAndPostBackup()">📂 ③ 各シートへ転記と後BKを実行</button>
+      <div class="step-sub-label">④ 転記先シート確認</div>
+      <div class="grid-3">
+        <a id="link-dest-d" class="mini-btn link-btn" target="_blank" rel="noopener" href="#">🔗 D列(参加)</a>
+        <a id="link-dest-f" class="mini-btn link-btn" target="_blank" rel="noopener" href="#">🔗 F列(色違)</a>
+        <a id="link-dest-g" class="mini-btn link-btn" target="_blank" rel="noopener" href="#">🔗 G列(Evnt)</a>
       </div>
-      <div id="resultName" class="result-name">受付の準備ができています</div>
-      <div id="resultNotice" class="result-notice"></div>
-    </section>
+      <button type="button" class="action-btn btn-teal" onclick="openWinnerModal()">✏️ ⑤ 当選者管理シートを開いて編集・削除</button>
+      <button type="button" class="action-btn btn-red" onclick="runResetTodayLog()">🗑️ ⑥ 本日の打刻ログを初期化</button>
+    </div>
+  </div>
+</div>
 
-    <!-- 入力・カメラ・NFC・スキャナー -->
-    <section id="inputCard" class="card">
-      <div class="device-btn-row">
-        <button id="btnCameraToggle" class="btn btn-primary" type="button">📷 カメラQR</button>
-        <button id="btnNfcToggle" class="btn btn-nfc" type="button">📡 NFC読取</button>
-        <button id="btnKbdToggle" class="btn btn-sub" type="button" title="物理スキャナー用：ソフトキーボード抑制">⌨️ OFF</button>
-      </div>
-
-      <!-- カメラ読取枠（③-1〜③-3反映） -->
-      <div id="cameraPanel" class="camera-panel">
-        <div class="camera-viewport">
-          <video id="cameraVideo" playsinline autoplay muted></video>
-          <div class="camera-guide"></div>
-          <canvas id="cameraCanvas" hidden></canvas>
-        </div>
-        <div class="camera-bar">
-          <div id="cameraStatusText" class="camera-status">📷 読取OK</div>
-          <div class="camera-bar-actions">
-            <button id="btnCameraSwitch" class="cam-ctrl-btn" type="button">🔄 切替</button>
-            <button id="btnTorch" class="cam-ctrl-btn" type="button" style="display:none;">🔦</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 物理スキャナー・手入力 -->
-      <form id="scanForm" class="scan-form" autocomplete="off">
-        <input id="scanInput" class="scan-input" type="text" inputmode="none" placeholder="スキャン / 会員番号 / 名前..." />
-        <button id="btnManualSubmit" class="btn btn-primary" type="submit">打刻</button>
-      </form>
-    </section>
-
-    <!-- 本日の打刻ログ -->
-    <section class="card">
-      <div class="summary-strip">
-        <div class="stat-chips">
-          <span class="stat-chip">有効 <b id="statValid">0</b></span>
-          <span class="stat-chip">総打刻 <b id="statTotal">0</b></span>
-          <span class="stat-chip">色違 <b id="statShiny">0</b></span>
-          <span class="stat-chip">Evnt <b id="statEvent">0</b></span>
-          <span class="stat-chip alert">未確 <b id="statUnconfirmed">0</b></span>
-        </div>
-        <button id="btnRefresh" class="mini-btn" type="button">🔄 更新</button>
-      </div>
-      <div id="logList" class="log-list">
-        <div class="hint" style="text-align:center; padding:16px 0;">まだ本日の打刻はありません</div>
-      </div>
-    </section>
-
-  </main>
-
-  <!-- モーダル1：接続設定・複数アプリ切替 -->
-  <div id="modalConnect" class="modal-backdrop">
-    <div class="modal-box">
-      <div class="modal-head">
-        <h2>🔌 アプリ接続・ワンタップ切替</h2>
-        <button id="btnCloseConnect" class="modal-close" type="button">✕</button>
-      </div>
-
-      <div class="field">
+<!-- ==================== モーダル0：🔌 GAS接続先URL設定＆ワンタップ切替 ==================== -->
+<div id="modal-gas-url" class="modal-bg">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>🔌 アプリ接続・ワンタップ切替</h3>
+      <button type="button" class="close-x" onclick="closeModal('modal-gas-url')">閉じる</button>
+    </div>
+    <div class="modal-scroll-body">
+      <div class="form-row">
         <label>登録済みアプリ一覧（タップで即切替・✏️で表示名変更）</label>
-        <div id="appListContainer" class="app-list"></div>
+        <div id="app-registry-list" class="app-switch-list"></div>
       </div>
 
-      <button id="btnCopyCurrentShareUrl" class="btn btn-sub" style="width:100%; margin-bottom:12px;" type="button">
-        📋 接続中アプリの「スタッフ共有用URL」をコピー
+      <button type="button" class="action-btn btn-sub" style="margin-bottom:8px;" onclick="copyShareSetupLink()">
+        🔗 選択中アプリの「スタッフ共有用URL」をコピー
       </button>
 
-      <hr class="divider" />
+      <hr class="modal-divider">
 
-      <div class="field">
-        <label>新しいアプリをリストへ追加（または共有URLを開くだけで自動追加）</label>
-        <input id="inputGasUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" />
+      <div class="conn-note">
+        新しいGASを追加する場合は <code>/exec</code> のURLを入力してください（共有URLをスマホで1回開くだけでも自動でリストに追加されます）。
       </div>
-      <div class="field">
+      <div class="form-row">
+        <label>GAS ウェブアプリURL（https://script.google.com/macros/s/..../exec）</label>
+        <input type="url" id="gas-url-input" placeholder="https://script.google.com/macros/s/..../exec" autocomplete="off">
+      </div>
+      <div class="form-row">
         <label>表示名（空欄ならスプレッドシート名を自動取得）</label>
-        <input id="inputAppName" type="text" placeholder="例：わっち用 / 水曜駅前 / 予備1" />
+        <input type="text" id="gas-app-name-input" placeholder="例：わっち用 / 水曜駅前 / 予備1" autocomplete="off">
       </div>
-      <button id="btnAddApp" class="btn btn-primary" style="width:100%;" type="button">＋ 追加して接続</button>
+      <div id="gas-conn-msg" class="conn-status-msg"></div>
+      <div class="btn-stack" style="margin-top:8px;">
+        <button type="button" class="action-btn btn-blue" onclick="saveAndTestGasUrl()">🔌 接続テストして追加・保存</button>
+        <button type="button" class="action-btn btn-red" onclick="clearSavedGasUrl()">🗑️ この端末の登録リストをすべて消去</button>
+      </div>
     </div>
   </div>
+</div>
 
-  <!-- モーダル2：スロット・アプリ設定 -->
-  <div id="modalSettings" class="modal-backdrop">
-    <div class="modal-box">
-      <div class="modal-head">
-        <h2>⚙️ スロット・アプリ設定</h2>
-        <button id="btnCloseSettings" class="modal-close" type="button">✕</button>
-      </div>
+<!-- ==================== モーダル1：全列 A〜H 参照 ==================== -->
+<div id="modal-full" class="modal-bg">
+  <div class="modal-card wide-modal">
+    <div class="modal-head">
+      <h3>👁️ 打刻ログ（全列 A〜H）</h3>
+      <button type="button" class="close-x" onclick="closeModal('modal-full')">閉じる</button>
+    </div>
+    <div class="modal-scroll-body" style="border:1px solid #cbd5e1; border-radius:8px;">
+      <table>
+        <thead>
+          <tr><th>行</th><th>A:Status</th><th>B:Done</th><th>C:Notif</th><th>D:Formatted</th><th>E:Stamping</th><th>F:Shiny</th><th>G:Event</th><th>H:Slot</th></tr>
+        </thead>
+        <tbody id="full-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
-      <!-- 一番上：ホスト専用 確認済み背景色（ヘッダー連動） -->
-      <div class="field">
-        <label>ホスト専用：当選者シート確認済み背景色（シートごとに保存・ヘッダー色にも連動）</label>
-        <div id="bgColorSwatches" class="swatch-row"></div>
-        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-          <input id="inputConfirmBgColor" type="color" value="#fff2cc" style="width:48px; height:36px; border:none; background:none; cursor:pointer;" />
-          <div id="bgColorPreview" class="bg-preview" style="flex:1;">🌸 ヘッダー＆確認セルの見本</div>
+<!-- ==================== モーダル2：⚙️ スロット・アプリ設定 ==================== -->
+<div id="modal-settings" class="modal-bg">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>⚙️ スロット・アプリ設定</h3>
+      <button type="button" class="close-x" onclick="closeModal('modal-settings')">閉じる</button>
+    </div>
+    <div class="modal-scroll-body">
+
+      <div class="form-row">
+        <label>🎨 ホスト専用：当選者シート確認済み背景色（シートごとに保存・ヘッダー色連動）</label>
+        <div class="color-pick-row">
+          <input type="color" id="set-hl-picker" value="#fff9b1" oninput="syncColorInputs('picker')">
+          <input type="text" id="set-hl-hex" value="#fff9b1" maxlength="7" placeholder="#fff9b1" oninput="syncColorInputs('hex')">
+          <div id="set-hl-preview" class="color-preview-chip" style="background:#fff9b1;">✅ 確 ＆ ヘッダー色</div>
         </div>
       </div>
 
-      <hr class="divider" />
-
-      <div class="grid-2">
-        <div class="field">
-          <label>スロット抽選</label>
-          <select id="setSlotEnabled">
-            <option value="true">🎰 ON（抽選あり）</option>
-            <option value="false">⚡ OFF（自動高速モード）</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>抽選モード</label>
-          <select id="setSlotMode">
-            <option value="normal">通常モード（履歴記録なし）</option>
-            <option value="fair">満遍なく当選モード（履歴記録あり）</option>
-          </select>
-        </div>
+      <div class="form-row">
+        <label>⚡ スロット抽選の有効 / 無効（OFF時は自動高速打刻モード）</label>
+        <select id="set-slotEnabled">
+          <option value="true">🎰 スロットON（抽選・演出あり）</option>
+          <option value="false">⚡ スロットOFF（自動高速打刻モード）</option>
+        </select>
       </div>
 
-      <div class="grid-2">
-        <div class="field">
-          <label>満遍なく上限回数（777/SAKURA）</label>
-          <select id="setFairLimit">
-            <option value="1">1回まで</option>
-            <option value="2">2回まで</option>
-            <option value="3">3回まで</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>効果音の音色</label>
-          <div style="display:flex; gap:6px;">
-            <select id="setSoundPreset">
-              <option value="classic">クラシック</option>
-              <option value="arcade">アーケード</option>
-              <option value="retro">レトロ8bit</option>
-              <option value="soft">ソフト</option>
+      <div class="form-row">
+        <label>🎰 リールの見た目（7・BAR デザイン切替）</label>
+        <select id="set-reelStyle">
+          <option value="legacy">🕰️ 旧バージョン風（黒背景＋赤発光「7」・濃グレー白「BAR」）</option>
+          <option value="modern">✨ 最新版デザイン（白背景「7️⃣」「💳」）</option>
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label>🔊 スロット効果音（項目別に選択して試聴）</label>
+        <div class="sound-config-box">
+          <div class="sound-preset-bar">
+            <button type="button" class="sound-preset-btn legacy-btn" onclick="applySoundPreset('legacy')">🕰️ 旧バージョン一括</button>
+            <button type="button" class="sound-preset-btn" onclick="applySoundPreset('basic')">🎵 ベーシック一括</button>
+          </div>
+          <div class="sound-config-row">
+            <span>回転音</span>
+            <select id="snd-spin">
+              <option value="basic">🎵 ベーシック（軽快な電子音）</option>
+              <option value="funny">🤪 おちゃらけ（ポコポコ跳ねる音）</option>
+              <option value="retro">👾 レトロゲーム（8bitピコピコ）</option>
+              <option value="casino">🎰 カジノ風（高速リール機械音）</option>
+              <option value="legacy">🕰️ 旧バージョン（600Hz矩形波 100ms）</option>
             </select>
-            <button id="btnTestSound" class="icon-btn" type="button">🎵</button>
+            <button type="button" class="sound-preview-btn" onclick="previewSoundRow('spin')">🔊試聴</button>
+          </div>
+          <div class="sound-config-row">
+            <span>停止/完了</span>
+            <select id="snd-ok">
+              <option value="basic">🎵 ベーシック（爽やかピポン）</option>
+              <option value="funny">🤪 おちゃらけ（ズッコケ風プッ）</option>
+              <option value="retro">👾 レトロゲーム（8bitコイン音）</option>
+              <option value="casino">🎰 カジノ風（重めのカチッ）</option>
+              <option value="legacy">🕰️ 旧バージョン（停止300Hz＋完了880/1760Hz）</option>
+            </select>
+            <button type="button" class="sound-preview-btn" onclick="previewSoundRow('ok')">🔊試聴</button>
+          </div>
+          <div class="sound-config-row">
+            <span>当たり</span>
+            <select id="snd-win">
+              <option value="basic">🎵 ベーシック（明るい当たり音）</option>
+              <option value="funny">🤪 おちゃらけ（ラッパ＆ボヨヨン）</option>
+              <option value="retro">👾 レトロゲーム（レベルアップ風）</option>
+              <option value="casino">🎰 カジノ風（キュイン！確定音）</option>
+              <option value="legacy">🕰️ 旧バージョン（三角波ファンファーレ共通）</option>
+            </select>
+            <button type="button" class="sound-preview-btn" onclick="previewSoundRow('win')">🔊試聴</button>
+          </div>
+          <div class="sound-config-row">
+            <span>大当たり</span>
+            <select id="snd-fanfare">
+              <option value="basic">🎵 ベーシック（ファンファーレ）</option>
+              <option value="funny">🤪 おちゃらけ（コミカル大祝福）</option>
+              <option value="retro">👾 レトロゲーム（8bitクリア曲）</option>
+              <option value="casino">🎰 カジノ風（キュイン＋連打）</option>
+              <option value="legacy">🕰️ 旧バージョン（三角波ファンファーレ）</option>
+            </select>
+            <button type="button" class="sound-preview-btn" onclick="previewSoundRow('fanfare')">🔊試聴</button>
+          </div>
+          <div class="sound-config-row">
+            <span>重複音</span>
+            <select id="snd-buzzer">
+              <option value="basic">🎵 ベーシック（低音ブザー）</option>
+              <option value="funny">🤪 おちゃらけ（プゥ〜＆低音）</option>
+              <option value="retro">👾 レトロゲーム（ゲームオーバー風）</option>
+              <option value="casino">🎰 カジノ風（サイレン警告音）</option>
+              <option value="legacy">🕰️ 旧バージョン（150/156Hzノコギリ波）</option>
+            </select>
+            <button type="button" class="sound-preview-btn" onclick="previewSoundRow('buzzer')">🔊試聴</button>
+          </div>
+          <div class="sound-config-row">
+            <span>🚨警告音</span>
+            <div style="font-size:0.75rem; color:#dc2626; font-weight:800;">🚨通知時（スロット結果音終了 約0.5秒後）</div>
+            <button type="button" class="sound-preview-btn" style="background:#fee2e2; color:#dc2626; border-color:#fca5a5;" onclick="playTone('alert')">🚨試聴</button>
           </div>
         </div>
       </div>
 
-      <div class="field">
-        <label>当選確率（%）※残りがハズレになります</label>
-        <div class="grid-3">
-          <div><label>777</label><input id="setProb777" type="number" min="0" max="100" step="0.5" /></div>
-          <div><label>SAKURA</label><input id="setProbSakura" type="number" min="0" max="100" step="0.5" /></div>
-          <div><label>BAR</label><input id="setProbBar" type="number" min="0" max="100" step="0.5" /></div>
-          <div><label>ベル</label><input id="setProbBell" type="number" min="0" max="100" step="0.5" /></div>
-          <div><label>ブドウ</label><input id="setProbGrape" type="number" min="0" max="100" step="0.5" /></div>
-          <div><label>チェリー</label><input id="setProbCherry" type="number" min="0" max="100" step="0.5" /></div>
+      <div class="form-row">
+        <label>抽選モード</label>
+        <select id="set-slotMode">
+          <option value="normal">🎲 通常モード（スロット履歴に記録しない）</option>
+          <option value="fair">⚖️ 満遍なく当選モード（777/SAKURA当選を履歴に記録）</option>
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label>各役の当選確率（%：左＝通常 / 右＝満遍なく）</label>
+        <div class="prob-grid">
+          <span>7️⃣ 777</span><input type="number" step="0.1" id="p-n-seven"><input type="number" step="0.1" id="p-f-seven">
+          <span>🌸 SAKURA</span><input type="number" step="0.1" id="p-n-sakura"><input type="number" step="0.1" id="p-f-sakura">
+          <span>💳 BAR</span><input type="number" step="0.1" id="p-n-bar"><input type="number" step="0.1" id="p-f-bar">
+          <span>🔔 ベル</span><input type="number" step="0.1" id="p-n-bell"><input type="number" step="0.1" id="p-f-bell">
+          <span>🍇 ブドウ</span><input type="number" step="0.1" id="p-n-grape"><input type="number" step="0.1" id="p-f-grape">
+          <span>🍒 チェリー</span><input type="number" step="0.1" id="p-n-cherry"><input type="number" step="0.1" id="p-f-cherry">
         </div>
       </div>
 
-      <button id="btnSaveSettings" class="btn btn-primary" style="width:100%; margin-bottom:10px;" type="button">💾 設定を保存</button>
-
-      <hr class="divider" />
-
-      <div class="grid-2">
-        <button id="btnResetHistory" class="btn btn-sub" type="button">🔄 スロット履歴リセット</button>
-        <button id="btnClearCache" class="btn btn-sub" type="button">♻️ マスター即時反映</button>
+      <div class="form-row">
+        <label>満遍なくモード：777・🌸の上限当選回数</label>
+        <select id="set-fairLimit">
+          <option value="1">1回まで</option>
+          <option value="2">2回まで</option>
+          <option value="3">3回まで</option>
+          <option value="0">上限なし（半減のみ）</option>
+        </select>
       </div>
-      <div id="historyCountHint" class="hint">現在のスロット履歴件数：0件</div>
+
+      <div class="form-row">
+        <label>ジャックポット演出（紙吹雪）対象</label>
+        <select id="set-jackpotTarget">
+          <option value="both">777 と SAKURA の両方</option>
+          <option value="7">777 のみ</option>
+          <option value="sakura">SAKURA のみ</option>
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label>重複スキャン時のペナルティ絵柄</label>
+        <select id="set-penaltyMode">
+          <option value="random">💀 &amp; 💩 ランダム</option>
+          <option value="skull">💀 のみ</option>
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label>演出ディレイ（秒 / 結果取得後に左リールが止まり始めるまでの待ち時間・例: 0 / 0.5 / 1.2）</label>
+        <input type="number" step="0.1" min="0" id="set-slotDelaySec">
+      </div>
+
+      <div class="form-row">
+        <label>操作後の自動更新一時停止（秒）</label>
+        <input type="number" id="set-pauseSeconds">
+      </div>
+
+      <div class="form-row">
+        <label>F列 / G列 のステータス項目名</label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+          <input type="text" id="set-fLabel" placeholder="F列（例：色違）">
+          <input type="text" id="set-gLabel" placeholder="G列（例：Evnt）">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>🔗 外部ツール・カスタムURLリンク（最大4枠・設定シートと連動）</label>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <div style="display:grid; grid-template-columns:1fr 2fr; gap:4px;">
+            <input type="text" id="cl-name-1" placeholder="ボタン名1（例：🎰抽選）"><input type="url" id="cl-url-1" placeholder="https://...">
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 2fr; gap:4px;">
+            <input type="text" id="cl-name-2" placeholder="ボタン名2"><input type="url" id="cl-url-2" placeholder="https://...">
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 2fr; gap:4px;">
+            <input type="text" id="cl-name-3" placeholder="ボタン名3"><input type="url" id="cl-url-3" placeholder="https://...">
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 2fr; gap:4px;">
+            <input type="text" id="cl-name-4" placeholder="ボタン名4"><input type="url" id="cl-url-4" placeholder="https://...">
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-stack" style="margin-top:12px;">
+        <button type="button" class="action-btn btn-blue" onclick="saveSettingsFromModal()">💾 設定を保存</button>
+        <button type="button" class="action-btn btn-red" onclick="confirmResetSlotHistory()">🔄 スロット履歴をリセット</button>
+      </div>
     </div>
   </div>
+</div>
 
-  <!-- モーダル3：締め・管理 -->
-  <div id="modalAdmin" class="modal-backdrop">
-    <div class="modal-box">
-      <div class="modal-head">
-        <h2>📦 締め作業・データ管理</h2>
-        <button id="btnCloseAdmin" class="modal-close" type="button">✕</button>
-      </div>
-
-      <div class="grid-2">
-        <div class="field">
-          <label>イベント月日 (MMDD)</label>
-          <input id="adminEventDate" type="text" placeholder="例: 1124" />
-        </div>
-        <div class="field">
-          <label>イベント時間 (HHMM)</label>
-          <input id="adminEventTime" type="text" placeholder="例: 1800" />
-        </div>
-      </div>
-
-      <button id="btnBackupTransfer" class="btn btn-ok" style="width:100%; margin-bottom:10px;" type="button">
-        📤 バックアップ＆外部シートへ転記
-      </button>
-
-      <hr class="divider" />
-
-      <button id="btnInitTodayLog" class="btn btn-danger" style="width:100%;" type="button">
-        🧹 本日の打刻ログを初期化（スロット履歴は保持）
-      </button>
-      <div class="hint">※初期化しても「設定」と「スロット履歴」は消えません。</div>
-      <div id="adminResultLog" class="hint" style="margin-top:8px; font-weight:700; color:#1e40af;"></div>
+<!-- ==================== モーダル3：🛠️ ② ログ管理・修正 ==================== -->
+<div id="modal-log-edit" class="modal-bg">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>🛠️ ② ログ管理・修正（E列書き換え / 行削除）</h3>
+      <button type="button" class="close-x" onclick="closeModal('modal-log-edit')">閉じる</button>
     </div>
+    <div id="log-edit-list" class="modal-scroll-body" style="display:flex; flex-direction:column; gap:8px;"></div>
   </div>
+</div>
 
-  <div id="toast" class="toast"></div>
+<!-- ==================== モーダル4：✏️ ⑤ 当選者管理シート ==================== -->
+<div id="modal-winner" class="modal-bg">
+  <div class="modal-card wide-modal">
+    <div class="modal-head">
+      <h3>✏️ ⑤ 当選者管理シート（全列・全行対応）</h3>
+      <button type="button" class="close-x" onclick="closeModal('modal-winner')">閉じる</button>
+    </div>
+    <div class="winner-toolbar">
+      <span id="winner-stats-badge" class="winner-stats">読み込み中...</span>
+      <button type="button" id="winner-view-toggle" class="mini-btn" style="padding:5px 9px;" onclick="toggleWinnerViewMode()">🗂️ カード表示に切替</button>
+      <a id="winner-ss-direct" href="#" target="_blank" rel="noopener" class="mini-btn link-btn" style="padding:5px 9px;">📊 シート本体を開く</a>
+    </div>
+    <div id="winner-jump-bar" class="winner-jump-bar"></div>
+    <div id="winner-editor-body" class="winner-table-wrap">読み込み中...</div>
+  </div>
+</div>
 
-  <!-- QR解析ライブラリ ＋ アプリ本体 -->
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-  <script src="./device.js"></script>
-  <script src="./app.js"></script>
+<script src="device.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
