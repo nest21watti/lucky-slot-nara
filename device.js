@@ -1,595 +1,450 @@
-// =========================================================================
-// device.js : GAS API通信 / スマホカメラQR / Web NFC 制御
-// =========================================================================
+/**
+ * device.js - カメラQR / スリープ防止 / ライト / Web NFC / 効果音
+ * - インカメラ時は映像のみ鏡像（左右反転）表示、QR解析は正常データで実行
+ * - カメラ起動中の自動スリープ防止（Wake Lock API）
+ * - app.js の一括ロック状態（canScan）に連動し、演出中・ロック中は映像維持のまま読取停止
+ */
 
-const LOCAL_GAS_URL_KEY = 'NARA_LUCKY_SLOT_GAS_URL_V1';
+(function (global) {
+  'use strict';
 
-// カメラQR状態
-let qrStream = null;
-let qrVideoTrack = null;
-let qrScanRafId = null;
-let qrIsRunning = false;
-let qrContinuous = true;
-let qrTorchOn = false;
-let qrBarcodeDetector = null;
-let qrEngineName = '';
-let qrDetectBusy = false;
-let qrLastCode = '';
-let qrLastTime = 0;
-
-// Web NFC状態
-let nfcReader = null;
-let nfcAbortController = null;
-let nfcIsRunning = false;
-let nfcLastCode = '';
-let nfcLastTime = 0;
-
-// -------------------------------------------------------------------------
-// 初期化（URL共有パラメータからの自動取り込み ＆ 接続ボタン状態反映）
-// -------------------------------------------------------------------------
-function initDeviceLayer() {
-  try {
-    let incomingUrl = '';
-    const hash = String(window.location.hash || '');
-    if (hash.indexOf('gas=') !== -1) {
-      const params = new URLSearchParams(hash.replace(/^#/, ''));
-      incomingUrl = params.get('gas') || '';
+  // ==========================================
+  // 1. 効果音エンジン（Web Audio API）
+  // ==========================================
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.enabled = true;
+      this.preset = 'classic';
     }
-    if (!incomingUrl && window.location.search) {
-      const qParams = new URLSearchParams(window.location.search);
-      incomingUrl = qParams.get('gas') || '';
-    }
-    incomingUrl = normalizeGasUrl(incomingUrl);
-    if (incomingUrl) {
-      localStorage.setItem(LOCAL_GAS_URL_KEY, incomingUrl);
-      // URLバーから接続URLを消去して履歴に残さない
-      if (window.history && window.history.replaceState) {
-        const cleanPath = window.location.origin + window.location.pathname;
-        window.history.replaceState(null, '', cleanPath);
+
+    ensureContext() {
+      if (!this.ctx) {
+        const AudioCtx = global.AudioContext || global.webkitAudioContext;
+        if (AudioCtx) this.ctx = new AudioCtx();
       }
-      if (typeof showToast === 'function') {
-        showToast('🔌 共有リンクから接続先GAS URLを保存しました');
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      return this.ctx;
+    }
+
+    setConfig({ enabled, preset }) {
+      if (typeof enabled === 'boolean') this.enabled = enabled;
+      if (preset) this.preset = preset;
+    }
+
+    getWave() {
+      switch (this.preset) {
+        case 'arcade': return 'sawtooth';
+        case 'retro':  return 'square';
+        case 'soft':   return 'sine';
+        default:       return 'triangle';
       }
     }
-  } catch (e) {}
 
-  updateConnButtonUi();
+    tone(freq, duration, delay = 0, gainPeak = 0.18, waveOverride = null) {
+      if (!this.enabled) return;
+      const ctx = this.ensureContext();
+      if (!ctx) return;
 
-  // バックグラウンド移行時にカメラを安全に解放
-  document.addEventListener('visibilitychange', function() {
-    if (document.hidden && qrIsRunning) {
-      stopCameraQr();
+      const start = ctx.currentTime + delay;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = waveOverride || this.getWave();
+      osc.frequency.setValueAtTime(freq, start);
+
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(gainPeak, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + duration + 0.02);
     }
-  });
-}
 
-function normalizeGasUrl(raw) {
-  const s = String(raw || '').trim();
-  if (!s) return '';
-  if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(\?.*)?$/i.test(s)) {
-    return '';
-  }
-  return s.split('?')[0];
-}
-
-function getGasApiUrl() {
-  try {
-    return normalizeGasUrl(localStorage.getItem(LOCAL_GAS_URL_KEY) || '');
-  } catch (e) {
-    return '';
-  }
-}
-
-function updateConnButtonUi() {
-  const btn = document.getElementById('conn-btn');
-  if (!btn) return;
-  const hasUrl = !!getGasApiUrl();
-  if (hasUrl) {
-    btn.className = 'conn-btn';
-    btn.innerText = '🔌 接続済';
-  } else {
-    btn.className = 'conn-btn disconnected';
-    btn.innerText = '🔌 未接続';
-  }
-}
-
-// -------------------------------------------------------------------------
-// GAS API 通信本体（text/plain送信でCORSプリフライトを完全回避）
-// -------------------------------------------------------------------------
-async function callGasApi(action, args, customUrl) {
-  const endpoint = customUrl ? normalizeGasUrl(customUrl) : getGasApiUrl();
-  if (!endpoint) {
-    throw new Error('接続先GAS URLが未設定です。右上の「🔌 未接続」ボタンから設定してください。');
-  }
-
-  let response;
-  try {
-    response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: action,
-        args: Array.isArray(args) ? args : []
-      }),
-      redirect: 'follow'
-    });
-  } catch (netErr) {
-    throw new Error('通信に失敗しました。電波状況またはGAS URLを確認してください。');
-  }
-
-  const rawText = await response.text();
-  let parsed;
-  try {
-    parsed = JSON.parse(rawText);
-  } catch (parseErr) {
-    if (rawText.indexOf('accounts.google.com') !== -1 || rawText.indexOf('<!DOCTYPE') !== -1) {
-      throw new Error('GASからHTMLが返されました。GASデプロイの「アクセスできるユーザー」が【全員】になっているか確認してください。');
+    playScan() {
+      this.tone(880, 0.08, 0, 0.16);
+      this.tone(1320, 0.10, 0.07, 0.16);
     }
-    throw new Error('サーバー応答の解析に失敗しました（HTTP ' + response.status + '）');
-  }
 
-  if (!parsed || parsed.ok === false) {
-    throw new Error((parsed && parsed.error) ? parsed.error : 'GAS側でエラーが発生しました。');
-  }
-  return parsed.data;
-}
-
-// -------------------------------------------------------------------------
-// GAS URL 設定モーダル操作
-// -------------------------------------------------------------------------
-function openGasUrlModal() {
-  const inp = document.getElementById('gas-url-input');
-  const msg = document.getElementById('gas-conn-msg');
-  if (inp) inp.value = getGasApiUrl();
-  if (msg) {
-    msg.style.color = '#334155';
-    msg.innerText = getGasApiUrl() ? '✅ 現在この端末に接続先が保存されています' : '⚠️ 未設定です。GASの /exec URLを貼り付けてください';
-  }
-  if (typeof openModal === 'function') openModal('modal-gas-url');
-}
-
-async function saveAndTestGasUrl() {
-  const inp = document.getElementById('gas-url-input');
-  const msg = document.getElementById('gas-conn-msg');
-  const raw = inp ? inp.value.trim() : '';
-  const validUrl = normalizeGasUrl(raw);
-
-  if (!validUrl) {
-    if (msg) {
-      msg.style.color = '#dc2626';
-      msg.innerText = '❌ URLの形式が正しくありません。「https://script.google.com/macros/s/.../exec」を入力してください。';
+    playFastOk() {
+      // スロットOFF（高速打刻モード）用の軽快な「ピポン！」
+      this.tone(1046.5, 0.08, 0, 0.18, 'sine');
+      this.tone(1567.98, 0.13, 0.07, 0.20, 'sine');
     }
-    return;
-  }
 
-  if (msg) {
-    msg.style.color = '#1d4ed8';
-    msg.innerText = '⏳ GASへ接続テスト中...';
-  }
-
-  try {
-    await callGasApi('ping', [], validUrl);
-    localStorage.setItem(LOCAL_GAS_URL_KEY, validUrl);
-    updateConnButtonUi();
-    if (msg) {
-      msg.style.color = '#15803d';
-      msg.innerText = '✅ 接続成功！この端末に保存しました。';
+    playTick() {
+      this.tone(520, 0.03, 0, 0.05);
     }
-    if (typeof showToast === 'function') showToast('✅ GASに接続しました');
-    setTimeout(function() {
-      if (typeof closeModal === 'function') closeModal('modal-gas-url');
-      if (typeof fetchDashboard === 'function') fetchDashboard(true);
-    }, 500);
-  } catch (err) {
-    if (msg) {
-      msg.style.color = '#dc2626';
-      msg.innerText = '❌ ' + (err.message || err);
+
+    playReelStop(idx) {
+      const freqs = [440, 554.37, 659.25];
+      this.tone(freqs[idx] || 520, 0.09, 0, 0.14);
     }
-  }
-}
 
-function copyShareSetupLink() {
-  const inp = document.getElementById('gas-url-input');
-  const url = normalizeGasUrl((inp && inp.value) ? inp.value : getGasApiUrl());
-  if (!url) {
-    alert('先に有効なGASの /exec URLを入力・保存してください。');
-    return;
-  }
-  const base = window.location.origin + window.location.pathname;
-  const shareUrl = base + '#gas=' + encodeURIComponent(url);
+    playWinSmall() {
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      notes.forEach((f, i) => this.tone(f, 0.14, i * 0.08, 0.18));
+    }
 
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(shareUrl).then(function() {
-      if (typeof showToast === 'function') showToast('🔗 スタッフ共有用セットアップURLをコピーしました');
-    }).catch(function() {
-      fallbackCopyText(shareUrl);
-    });
-  } else {
-    fallbackCopyText(shareUrl);
-  }
-}
+    playWinBig() {
+      const notes = [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.5, 1567.98];
+      const times = [0, 0.08, 0.16, 0.24, 0.36, 0.44, 0.54, 0.66];
+      notes.forEach((f, i) => this.tone(f, i === notes.length - 1 ? 0.45 : 0.13, times[i], 0.22));
+    }
 
-function fallbackCopyText(text) {
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  document.body.appendChild(ta);
-  ta.select();
-  try { document.execCommand('copy'); } catch (e) {}
-  document.body.removeChild(ta);
-  if (typeof showToast === 'function') showToast('🔗 コピーしました');
-}
+    playMiss() {
+      this.tone(330, 0.12, 0, 0.12);
+      this.tone(261.63, 0.18, 0.12, 0.12);
+    }
 
-function clearSavedGasUrl() {
-  if (!confirm('この端末に保存されているGAS接続設定を消去しますか？')) return;
-  try { localStorage.removeItem(LOCAL_GAS_URL_KEY); } catch (e) {}
-  const inp = document.getElementById('gas-url-input');
-  const msg = document.getElementById('gas-conn-msg');
-  if (inp) inp.value = '';
-  if (msg) {
-    msg.style.color = '#dc2626';
-    msg.innerText = '🗑️ 接続設定を消去しました。';
-  }
-  updateConnButtonUi();
-  if (typeof showToast === 'function') showToast('🗑️ 接続設定を消去しました');
-}
+    playDup() {
+      this.tone(240, 0.12, 0, 0.18, 'sawtooth');
+      this.tone(200, 0.18, 0.13, 0.18, 'sawtooth');
+    }
 
-// -------------------------------------------------------------------------
-// 🚨 ロック連動（カメラQR・NFCボタンの無効化制御）
-// -------------------------------------------------------------------------
-function setDeviceToolsLocked(locked) {
-  const qrBtn = document.getElementById('qr-cam-btn');
-  const nfcBtn = document.getElementById('nfc-btn');
-  if (qrBtn) qrBtn.disabled = !!locked;
-  if (nfcBtn) nfcBtn.disabled = !!locked;
-}
-
-// -------------------------------------------------------------------------
-// スマホカメラQR読み取り（BarcodeDetector優先 ➔ jsQRフォールバック）
-// -------------------------------------------------------------------------
-async function initQrEngine() {
-  if ('BarcodeDetector' in window) {
-    try {
-      const formats = await window.BarcodeDetector.getSupportedFormats();
-      if (Array.isArray(formats) && formats.indexOf('qr_code') !== -1) {
-        qrBarcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
-        qrEngineName = '高速QRエンジン';
-        return true;
+    playAlert() {
+      // 🚨 重要通知ロック警告音（音OFFでも注意喚起のため鳴らす）
+      const prev = this.enabled;
+      this.enabled = true;
+      for (let i = 0; i < 3; i++) {
+        this.tone(920, 0.13, i * 0.26, 0.24, 'square');
+        this.tone(620, 0.13, i * 0.26 + 0.13, 0.24, 'square');
       }
-    } catch (e) {}
-  }
-  qrBarcodeDetector = null;
-  if (typeof window.jsQR === 'function') {
-    qrEngineName = '標準QRエンジン';
-    return true;
-  }
-  return false;
-}
+      this.enabled = prev;
+    }
 
-function toggleCameraQr() {
-  if (typeof isAlertLocked !== 'undefined' && isAlertLocked) {
-    if (typeof notifyLockedScanAttempt === 'function') notifyLockedScanAttempt();
-    return;
-  }
-  if (qrIsRunning) {
-    stopCameraQr();
-  } else {
-    startCameraQr();
-  }
-}
-
-async function startCameraQr() {
-  if (typeof getAudioCtx === 'function') getAudioCtx();
-
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    alert('このブラウザではカメラを利用できません。HTTPS環境（GitHub Pages）のChromeまたはSafariで開いてください。');
-    return;
+    playPreview() {
+      const prev = this.enabled;
+      this.enabled = true;
+      this.playWinSmall();
+      this.enabled = prev;
+    }
   }
 
-  const okEngine = await initQrEngine();
-  if (!okEngine) {
-    alert('QR解析ライブラリの読み込み中です。1〜2秒待ってからもう一度押してください。');
-    return;
-  }
+  // ==========================================
+  // 2. カメラQRスキャナー（前後切替・鏡像・WakeLock・ライト）
+  // ==========================================
+  class CameraController {
+    constructor(opts) {
+      this.video = opts.video;
+      this.canvas = opts.canvas;
+      this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+      this.onDetect = opts.onDetect;
+      this.canScan = opts.canScan || (() => true);
+      this.onStateChange = opts.onStateChange || (() => {});
 
-  const panel = document.getElementById('qr-reader-panel');
-  const video = document.getElementById('qr-video');
-  const btn = document.getElementById('qr-cam-btn');
-  const label = document.getElementById('qr-engine-label');
-  const torchBtn = document.getElementById('qr-torch-btn');
+      this.stream = null;
+      this.active = false;
+      this.rafId = null;
+      this.torchOn = false;
+      this.torchSupported = false;
+      this.wakeLock = null;
 
-  try {
-    qrStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    });
-  } catch (err) {
-    alert('カメラを起動できませんでした。\nブラウザのカメラ許可設定を確認してください。\n(' + (err.message || err.name) + ')');
-    return;
-  }
+      // 前回のカメラ向きを記憶（デフォルト：アウトカメラ）
+      this.facingMode = localStorage.getItem('dakoku_camera_facing') === 'user' ? 'user' : 'environment';
 
-  video.srcObject = qrStream;
-  video.setAttribute('playsinline', 'true');
-  try { await video.play(); } catch (e) {}
+      // 同一QRの連続誤爆防止（2.5秒）
+      this.lastCode = '';
+      this.lastScanAt = 0;
+      this.lastFrameAt = 0;
 
-  qrIsRunning = true;
-  qrTorchOn = false;
-  if (panel) panel.style.display = 'block';
-  if (btn) {
-    btn.classList.add('qr-active');
-    btn.innerText = '📷 カメラ停止';
-  }
-  if (label) label.innerText = '📷 読取中（' + qrEngineName + '）';
-
-  // ライト（トーチ）対応チェック
-  qrVideoTrack = qrStream.getVideoTracks()[0] || null;
-  if (torchBtn) {
-    torchBtn.style.display = 'none';
-    torchBtn.classList.remove('on');
-    if (qrVideoTrack && typeof qrVideoTrack.getCapabilities === 'function') {
-      try {
-        const caps = qrVideoTrack.getCapabilities();
-        if (caps && caps.torch) {
-          torchBtn.style.display = 'inline-block';
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && this.active) {
+          this.acquireWakeLock();
         }
-      } catch (e) {}
+      });
     }
-  }
 
-  scanQrFrameLoop();
-}
+    isFront() {
+      return this.facingMode === 'user';
+    }
 
-function stopCameraQr() {
-  qrIsRunning = false;
-  qrDetectBusy = false;
-  qrTorchOn = false;
-  if (qrScanRafId) {
-    cancelAnimationFrame(qrScanRafId);
-    qrScanRafId = null;
-  }
-  if (qrStream) {
-    qrStream.getTracks().forEach(function(t) {
-      try { t.stop(); } catch (e) {}
-    });
-    qrStream = null;
-  }
-  qrVideoTrack = null;
+    getFacingLabel() {
+      return this.isFront() ? 'インカメラ' : 'アウトカメラ';
+    }
 
-  const video = document.getElementById('qr-video');
-  if (video) video.srcObject = null;
-  const panel = document.getElementById('qr-reader-panel');
-  if (panel) panel.style.display = 'none';
-  const btn = document.getElementById('qr-cam-btn');
-  if (btn) {
-    btn.classList.remove('qr-active');
-    btn.innerText = '📷 カメラQR';
-  }
-  const torchBtn = document.getElementById('qr-torch-btn');
-  if (torchBtn) {
-    torchBtn.classList.remove('on');
-    torchBtn.style.display = 'none';
-  }
-}
-
-function toggleQrContinuous() {
-  qrContinuous = !qrContinuous;
-  const b = document.getElementById('qr-cont-btn');
-  if (b) {
-    b.innerText = qrContinuous ? '連続ON' : '1回のみ';
-    b.className = 'qr-mini-btn' + (qrContinuous ? ' on' : '');
-  }
-}
-
-async function toggleQrTorch() {
-  if (!qrVideoTrack) return;
-  try {
-    qrTorchOn = !qrTorchOn;
-    await qrVideoTrack.applyConstraints({ advanced: [{ torch: qrTorchOn }] });
-    const b = document.getElementById('qr-torch-btn');
-    if (b) b.className = 'qr-mini-btn' + (qrTorchOn ? ' on' : '');
-  } catch (e) {
-    qrTorchOn = false;
-    if (typeof showToast === 'function') showToast('🔦 この端末ではライト制御に非対応です');
-  }
-}
-
-function scanQrFrameLoop() {
-  if (!qrIsRunning) return;
-  qrScanRafId = requestAnimationFrame(scanQrFrameLoop);
-
-  if (qrDetectBusy) return;
-  if (typeof isAlertLocked !== 'undefined' && isAlertLocked) return;
-  if (typeof isSubmittingScan !== 'undefined' && isSubmittingScan) return;
-
-  const video = document.getElementById('qr-video');
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
-
-  qrDetectBusy = true;
-
-  if (qrBarcodeDetector) {
-    qrBarcodeDetector.detect(video).then(function(codes) {
-      qrDetectBusy = false;
-      if (!qrIsRunning) return;
-      if (codes && codes.length > 0 && codes[0].rawValue) {
-        handleDetectedQrCode(codes[0].rawValue);
+    async start() {
+      if (this.active) return true;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('このブラウザはカメラ機能に対応していません');
       }
-    }).catch(function() {
-      qrDetectBusy = false;
-    });
-    return;
-  }
 
-  // jsQR フォールバック
-  try {
-    const canvas = document.getElementById('qr-canvas');
-    if (canvas && typeof window.jsQR === 'function') {
-      const targetW = Math.min(video.videoWidth, 640);
-      const targetH = Math.round((video.videoHeight / video.videoWidth) * targetW);
-      if (canvas.width !== targetW || canvas.height !== targetH) {
-        canvas.width = targetW;
-        canvas.height = targetH;
+      await this.openStream(this.facingMode);
+      this.active = true;
+      await this.acquireWakeLock();
+      this.emitState();
+      this.loop();
+      return true;
+    }
+
+    async openStream(facing) {
+      this.stopTracksOnly();
+      let stream = null;
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: facing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+      } catch (e) {
+        // PC等で facingMode 指定に失敗した場合のフォールバック
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: true
+        });
       }
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0, targetW, targetH);
-      const imgData = ctx.getImageData(0, 0, targetW, targetH);
-      const found = window.jsQR(imgData.data, targetW, targetH, { inversionAttempts: 'dontInvert' });
-      if (found && found.data) {
-        handleDetectedQrCode(found.data);
+
+      this.stream = stream;
+      this.video.srcObject = stream;
+      this.video.setAttribute('playsinline', 'true');
+      await this.video.play();
+
+      // インカメラ時のみ映像を左右反転（鏡像）
+      this.video.classList.toggle('mirrored', facing === 'user');
+
+      // ライト（トーチ）対応チェック（インカメラ時は常に非表示）
+      this.torchOn = false;
+      this.torchSupported = false;
+      if (facing !== 'user') {
+        const track = this.getVideoTrack();
+        if (track && typeof track.getCapabilities === 'function') {
+          const caps = track.getCapabilities();
+          if (caps && caps.torch) {
+            this.torchSupported = true;
+          }
+        }
       }
     }
-  } catch (e) {}
-  qrDetectBusy = false;
-}
 
-function handleDetectedQrCode(rawVal) {
-  const clean = String(rawVal || '').trim();
-  if (!clean) return;
+    async switchCamera() {
+      const next = this.facingMode === 'environment' ? 'user' : 'environment';
+      this.facingMode = next;
+      localStorage.setItem('dakoku_camera_facing', next);
 
-  if (typeof isAlertLocked !== 'undefined' && isAlertLocked) {
-    if (typeof notifyLockedScanAttempt === 'function') notifyLockedScanAttempt();
-    return;
-  }
-
-  const now = Date.now();
-  if (clean === qrLastCode && (now - qrLastTime) < 2800) {
-    return;
-  }
-  qrLastCode = clean;
-  qrLastTime = now;
-
-  if (navigator.vibrate) {
-    try { navigator.vibrate(60); } catch (e) {}
-  }
-  if (!qrContinuous) {
-    stopCameraQr();
-  }
-  if (typeof submitScan === 'function') {
-    submitScan(clean);
-  }
-}
-
-// -------------------------------------------------------------------------
-// Web NFC タグ読み取り（Android Chrome HTTPS専用）
-// -------------------------------------------------------------------------
-function toggleNfcReader() {
-  if (typeof isAlertLocked !== 'undefined' && isAlertLocked) {
-    if (typeof notifyLockedScanAttempt === 'function') notifyLockedScanAttempt();
-    return;
-  }
-  if (nfcIsRunning) {
-    stopNfcReader();
-  } else {
-    startNfcReader();
-  }
-}
-
-async function startNfcReader() {
-  if (typeof getAudioCtx === 'function') getAudioCtx();
-
-  if (!('NDEFReader' in window)) {
-    alert('この端末・ブラウザはWeb NFCに対応していません。\nNFC読取は Android版 Google Chrome でご利用ください。');
-    return;
-  }
-
-  const btn = document.getElementById('nfc-btn');
-  const bar = document.getElementById('nfc-status-bar');
-
-  try {
-    nfcAbortController = new AbortController();
-    nfcReader = new window.NDEFReader();
-    await nfcReader.scan({ signal: nfcAbortController.signal });
-
-    nfcIsRunning = true;
-    if (btn) {
-      btn.classList.add('nfc-active');
-      btn.innerText = '📶 NFC待機中';
+      if (this.active) {
+        await this.openStream(next);
+        this.emitState();
+      }
     }
-    if (bar) bar.style.display = 'block';
-    if (typeof showToast === 'function') showToast('📶 NFC待機を開始しました。タグをかざしてください');
 
-    nfcReader.onreadingerror = function() {
-      if (typeof showToast === 'function') showToast('⚠️ NFCタグをうまく読めませんでした。もう一度かざしてください');
-    };
+    async toggleTorch() {
+      if (!this.active || !this.torchSupported || this.isFront()) return false;
+      const track = this.getVideoTrack();
+      if (!track) return false;
 
-    nfcReader.onreading = function(event) {
-      if (typeof isAlertLocked !== 'undefined' && isAlertLocked) {
-        if (typeof notifyLockedScanAttempt === 'function') notifyLockedScanAttempt();
-        return;
+      const nextState = !this.torchOn;
+      try {
+        await track.applyConstraints({ advanced: [{ torch: nextState }] });
+        this.torchOn = nextState;
+        this.emitState();
+        return this.torchOn;
+      } catch (e) {
+        this.torchSupported = false;
+        this.torchOn = false;
+        this.emitState();
+        throw new Error('この端末ではライトを切り替えられませんでした');
       }
+    }
 
-      const payload = extractNfcPayload(event);
-      if (!payload) {
-        if (typeof showToast === 'function') showToast('⚠️ NFCタグ内に読み取れるデータがありません');
-        return;
+    stop() {
+      this.active = false;
+      if (this.rafId) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
       }
+      this.stopTracksOnly();
+      this.releaseWakeLock();
+      this.torchOn = false;
+      this.torchSupported = false;
+      this.video.classList.remove('mirrored');
+      this.emitState();
+    }
+
+    stopTracksOnly() {
+      if (this.stream) {
+        this.stream.getTracks().forEach((t) => {
+          try { t.stop(); } catch (_) {}
+        });
+        this.stream = null;
+      }
+      if (this.video) {
+        this.video.srcObject = null;
+      }
+    }
+
+    getVideoTrack() {
+      if (!this.stream) return null;
+      const tracks = this.stream.getVideoTracks();
+      return tracks.length > 0 ? tracks[0] : null;
+    }
+
+    async acquireWakeLock() {
+      if (!('wakeLock' in navigator)) return;
+      try {
+        if (this.wakeLock) return;
+        this.wakeLock = await navigator.wakeLock.request('screen');
+        this.wakeLock.addEventListener('release', () => {
+          this.wakeLock = null;
+        });
+      } catch (_) {
+        // 非対応環境・省電力モード等は無視
+      }
+    }
+
+    releaseWakeLock() {
+      if (this.wakeLock) {
+        try { this.wakeLock.release(); } catch (_) {}
+        this.wakeLock = null;
+      }
+    }
+
+    emitState() {
+      this.onStateChange({
+        active: this.active,
+        facingMode: this.facingMode,
+        facingLabel: this.getFacingLabel(),
+        torchSupported: this.torchSupported,
+        torchOn: this.torchOn
+      });
+    }
+
+    loop() {
+      if (!this.active) return;
+      this.rafId = requestAnimationFrame(() => this.loop());
 
       const now = Date.now();
-      if (payload === nfcLastCode && (now - nfcLastTime) < 2500) {
+      // 約8fpsで解析（バッテリー負荷軽減＆十分な応答速度）
+      if (now - this.lastFrameAt < 120) return;
+      this.lastFrameAt = now;
+
+      // 一括ロック中（照合中・スロット演出中・結果後クールダウン・🚨ロック中）は映像だけ映して読取停止
+      if (!this.canScan()) return;
+
+      if (this.video.readyState !== this.video.HAVE_ENOUGH_DATA) return;
+      const vw = this.video.videoWidth;
+      const vh = this.video.videoHeight;
+      if (!vw || !vh) return;
+
+      // 解析用に適度なサイズへ縮小（非反転の生映像をそのまま描画して解析）
+      const scale = Math.min(1, 640 / vw);
+      const cw = Math.floor(vw * scale);
+      const ch = Math.floor(vh * scale);
+      if (this.canvas.width !== cw || this.canvas.height !== ch) {
+        this.canvas.width = cw;
+        this.canvas.height = ch;
+      }
+
+      this.ctx.drawImage(this.video, 0, 0, cw, ch);
+      const imgData = this.ctx.getImageData(0, 0, cw, ch);
+
+      if (typeof global.jsQR !== 'function') return;
+      const qr = global.jsQR(imgData.data, cw, ch, { inversionAttempts: 'dontInvert' });
+      if (!qr || !qr.data) return;
+
+      const text = String(qr.data).trim();
+      if (!text) return;
+
+      // 同一QRの連続誤読ガード（2.5秒）
+      if (text === this.lastCode && (now - this.lastScanAt) < 2500) {
         return;
       }
-      nfcLastCode = payload;
-      nfcLastTime = now;
+      this.lastCode = text;
+      this.lastScanAt = now;
 
-      if (navigator.vibrate) {
-        try { navigator.vibrate(80); } catch (e) {}
-      }
-      if (typeof submitScan === 'function') {
-        submitScan(payload);
-      }
-    };
-  } catch (err) {
-    stopNfcReader();
-    if (err && err.name === 'NotAllowedError') {
-      alert('NFCの利用が許可されていません。端末のNFC設定をONにし、Chromeの権限を許可してください。');
-    } else if (err && err.name !== 'AbortError') {
-      alert('NFC読取を開始できませんでした: ' + (err.message || err));
-    }
-  }
-}
-
-function stopNfcReader() {
-  nfcIsRunning = false;
-  if (nfcAbortController) {
-    try { nfcAbortController.abort(); } catch (e) {}
-    nfcAbortController = null;
-  }
-  nfcReader = null;
-
-  const btn = document.getElementById('nfc-btn');
-  if (btn) {
-    btn.classList.remove('nfc-active');
-    btn.innerText = '📶 NFC読取';
-  }
-  const bar = document.getElementById('nfc-status-bar');
-  if (bar) bar.style.display = 'none';
-}
-
-function extractNfcPayload(event) {
-  try {
-    const records = (event && event.message && event.message.records) ? event.message.records : [];
-    for (let i = 0; i < records.length; i++) {
-      const rec = records[i];
-      if (!rec || !rec.data) continue;
-      if (rec.recordType === 'text' || rec.recordType === 'url' || rec.recordType === 'absolute-url') {
-        const decoder = new TextDecoder(rec.encoding || 'utf-8');
-        const txt = decoder.decode(rec.data).trim();
-        if (txt) return txt;
+      if (typeof this.onDetect === 'function') {
+        this.onDetect(text, 'camera');
       }
     }
-    // テキスト・URL以外のレコードが入っている場合のフォールバック
-    for (let j = 0; j < records.length; j++) {
-      const rec2 = records[j];
-      if (!rec2 || !rec2.data) continue;
-      const txt2 = new TextDecoder('utf-8').decode(rec2.data).replace(/[\u0000-\u001F\u007F]/g, '').trim();
-      if (txt2) return txt2;
-    }
-  } catch (e) {}
-
-  if (event && event.serialNumber) {
-    return String(event.serialNumber).trim();
   }
-  return '';
-}
+
+  // ==========================================
+  // 3. Web NFC コントローラー（Android Chrome 専用）
+  // ==========================================
+  class NfcController {
+    constructor(opts) {
+      this.onDetect = opts.onDetect;
+      this.canScan = opts.canScan || (() => true);
+      this.onStateChange = opts.onStateChange || (() => {});
+      this.active = false;
+      this.abortController = null;
+      this.lastCode = '';
+      this.lastScanAt = 0;
+    }
+
+    isSupported() {
+      return ('NDEFReader' in global);
+    }
+
+    async start() {
+      if (this.active) return true;
+      if (!this.isSupported()) {
+        throw new Error('NFC読取は Android の Google Chrome のみ対応しています');
+      }
+
+      this.abortController = new AbortController();
+      const ndef = new global.NDEFReader();
+      await ndef.scan({ signal: this.abortController.signal });
+
+      this.active = true;
+      this.onStateChange({ active: true });
+
+      ndef.addEventListener('reading', (event) => {
+        if (!this.active || !this.canScan()) return;
+        const text = this.extractPayload(event);
+        if (!text) return;
+
+        const now = Date.now();
+        if (text === this.lastCode && (now - this.lastScanAt) < 2500) return;
+        this.lastCode = text;
+        this.lastScanAt = now;
+
+        if (typeof this.onDetect === 'function') {
+          this.onDetect(text, 'nfc');
+        }
+      });
+
+      ndef.addEventListener('readingerror', () => {
+        // かざし直し待ち
+      });
+
+      return true;
+    }
+
+    extractPayload(event) {
+      try {
+        if (event.message && Array.isArray(event.message.records)) {
+          const decoder = new TextDecoder();
+          for (const rec of event.message.records) {
+            if (rec.recordType === 'text' || rec.recordType === 'url') {
+              const decoded = decoder.decode(rec.data).trim();
+              if (decoded) return decoded;
+            }
+          }
+        }
+      } catch (_) {}
+      return event.serialNumber ? String(event.serialNumber).trim() : '';
+    }
+
+    stop() {
+      this.active = false;
+      if (this.abortController) {
+        try { this.abortController.abort(); } catch (_) {}
+        this.abortController = null;
+      }
+      this.onStateChange({ active: false });
+    }
+  }
+
+  global.DakokuDevices = {
+    SoundEngine,
+    CameraController,
+    NfcController
+  };
+})(window);
