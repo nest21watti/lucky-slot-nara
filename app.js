@@ -1,5 +1,5 @@
 // =========================================================================
-// app.js : 打刻・Luckyスロット(ON/OFF・一括ロック)・ヘッダー色連動・サウンド・🚨ロック・締め作業
+// app.js : 打刻・Luckyスロット(ON/OFF・一括ロック)・ヘッダー色連動・E列リンク化・サウンド・🚨ロック・締め作業
 // =========================================================================
 
 const LOCAL_SOUND_KEY = 'NARA_SLOT_SOUNDS_FINAL_V2';
@@ -1373,6 +1373,17 @@ function getStatusOptionsHtml(currentVal) {
   }).join('');
 }
 
+// E列表示ヘルパー（URLならタップ可能な「Linkを開く」、通常文字はそのまま表示）
+function formatColECellHtml(rawE, truncatePlain) {
+  const str = String(rawE || '').trim();
+  if (/^https?:\/\//i.test(str)) {
+    const safeHref = escapeHtml(str);
+    return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; font-weight:800; text-decoration:underline;">Linkを開く</a>`;
+  }
+  const disp = (truncatePlain && str.length > 28) ? (str.substring(0, 28) + '…') : str;
+  return escapeHtml(disp);
+}
+
 function renderTables() {
   const revRows = (state.rows || []).slice().reverse();
   const hlColor = (state.settings && state.settings.highlightColor) ? state.settings.highlightColor : '#fff9b1';
@@ -1392,13 +1403,12 @@ function renderTables() {
       doneHtml = `<button type="button" class="done-btn${isConfirmed ? ' ok' : ''}"${doneStyle} onclick="onToggleDone(${r.rowNum})">${escapeHtml(r.b || '未')}</button>`;
     }
 
-    const shortE = r.e.length > 28 ? r.e.substring(0, 28) + '…' : r.e;
     rowsHtml += `<tr${trCls}>
       <td>${stSelect}</td>
       <td style="text-align:center;">${doneHtml}</td>
       <td class="${nCls}">${escapeHtml(r.c)}</td>
       <td${dCls}>${escapeHtml(r.d)}</td>
-      <td class="td-stamping" title="${escapeHtml(r.e)}">${escapeHtml(shortE)}</td>
+      <td class="td-stamping" title="${escapeHtml(r.e)}">${formatColECellHtml(r.e, true)}</td>
       <td>${escapeHtml(r.f)}</td>
       <td>${escapeHtml(r.g)}</td>
       <td>${escapeHtml(r.h)}</td>
@@ -1508,7 +1518,7 @@ function openFullLogModal() {
     <td>${r.rowNum}</td><td>${escapeHtml(r.a)}</td><td>${escapeHtml(r.b)}</td>
     <td class="td-notif${(r.c.indexOf('🚨') !== -1 || r.c.indexOf('⚠️') !== -1) ? ' alert' : ''}">${escapeHtml(r.c)}</td>
     <td class="${r.isRed ? 'td-red' : ''}">${escapeHtml(r.d)}</td>
-    <td>${escapeHtml(r.e)}</td><td>${escapeHtml(r.f)}</td><td>${escapeHtml(r.g)}</td><td>${escapeHtml(r.h)}</td>
+    <td title="${escapeHtml(r.e)}">${formatColECellHtml(r.e, false)}</td><td>${escapeHtml(r.f)}</td><td>${escapeHtml(r.g)}</td><td>${escapeHtml(r.h)}</td>
   </tr>`).join('');
   openModal('modal-full');
 }
