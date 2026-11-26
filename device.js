@@ -1,5 +1,5 @@
 // =========================================================================
-// device.js : 複数GASアプリ切替 / GAS API通信 / カメラQR(前後切替・鏡像・WakeLock) / Web NFC
+// device.js : 複数GASアプリ切替 / GAS API通信 / カメラQR(枠内限定解析・前後切替・鏡像・WakeLock) / Web NFC
 // =========================================================================
 
 const LEGACY_GAS_URL_KEY = 'NARA_LUCKY_SLOT_GAS_URL_V1';
@@ -19,6 +19,7 @@ let qrTorchOn = false;
 let qrBarcodeDetector = null;
 let qrEngineName = '';
 let qrDetectBusy = false;
+let qrLastScanTick = 0;
 let qrLastCode = '';
 let qrLastTime = 0;
 let qrFacingMode = 'environment'; // 'environment'（アウト） | 'user'（イン）
@@ -300,8 +301,12 @@ function renameRegisteredApp(id) {
   saveAppRegistry();
   renderAppRegistryList();
   if (target.id === activeAppId) {
-    const titleEl = document.getElementById('header-ss-name');
-    if (titleEl) titleEl.innerText = '🌸 ' + getAppDisplayLabel(target);
+    if (typeof updateHeaderTitleUi === 'function') {
+      updateHeaderTitleUi(getAppDisplayLabel(target));
+    } else {
+      const titleEl = document.getElementById('header-ss-name');
+      if (titleEl) titleEl.innerText = getAppDisplayLabel(target);
+    }
   }
   if (typeof showToast === 'function') showToast('✅ 表示名を更新しました');
 }
@@ -465,7 +470,7 @@ function setDeviceToolsLocked(locked) {
 }
 
 // -------------------------------------------------------------------------
-// スマホカメラQR読み取り（前後切替・鏡像・WakeLock・一括ロック連動）
+// スマホカメラQR読み取り（黄色枠内限定解析・前後切替・鏡像・WakeLock）
 // -------------------------------------------------------------------------
 async function initQrEngine() {
   if ('BarcodeDetector' in window) {
@@ -531,9 +536,9 @@ function updateCameraStatusUi() {
     label.innerText = '🎰 スロット演出中…';
   } else if (slotOff) {
     panel.classList.add('cam-fast');
-    label.innerText = '⚡ 高速スキャンOK（' + getCameraFacingLabel() + '）';
+    label.innerText = '⚡ 枠内に合わせて読取（' + getCameraFacingLabel() + '）';
   } else {
-    label.innerText = '📷 読取OK（' + getCameraFacingLabel() + '）';
+    label.innerText = '📷 枠内に合わせて読取（' + getCameraFacingLabel() + '）';
   }
 }
 
@@ -579,7 +584,7 @@ async function openCameraStream(facing) {
   const wrap = document.getElementById('qr-video-wrap');
   const torchBtn = document.getElementById('qr-torch-btn');
 
-  // インカメラ時のみ映像枠に鏡像クラスを付与（Android Chrome 確実反転）
+  // インカメラ時のみ映像枠に鏡像クラスを付与（QR解析は中央切出の生映像で正常読取）
   if (wrap) {
     wrap.classList.toggle('is-front-cam', facing === 'user');
   }
@@ -627,6 +632,7 @@ async function startCameraQr() {
   }
 
   qrIsRunning = true;
+  qrLastScanTick = 0;
   await requestCameraWakeLock();
 
   const panel = document.getElementById('qr-reader-panel');
@@ -713,51 +719,101 @@ function isScannerInputBlocked() {
   return false;
 }
 
+// 画面上の黄色い枠（.qr-reticle）に対応する元映像の切り出し範囲を算出
+function computeReticleCropRect(video) {
+  const vidW = video.videoWidth;
+  const vidH = video.videoHeight;
+  const dispW = video.clientWidth;
+  const dispH = video.clientHeight;
+
+  if (!dispW || !dispH) {
+    const side = Math.min(vidW, vidH);
+    return {
+      x: Math.floor((vidW - side) / 2),
+      y: Math.floor((vidH - side) / 2),
+      w: side,
+      h: side
+    };
+  }
+
+  const reticle = document.getElementById('qr-reticle');
+  const retW = (reticle && reticle.offsetWidth) ? reticle.offsetWidth : 165;
+  const retH = (reticle && reticle.offsetHeight) ? reticle.offsetHeight : 165;
+
+  // object-fit: cover による映像の表示倍率から、黄色枠の実映像サイズを逆算
+  // 枠ぴったりに合わせたQRの余白（クワイエットゾーン）確保のため6%のみ微調整
+  const coverScale = Math.max(dispW / vidW, dispH / vidH);
+  const cropW = Math.max(64, Math.min(vidW, Math.round((retW * 1.06) / coverScale)));
+  const cropH = Math.max(64, Math.min(vidH, Math.round((retH * 1.06) / coverScale)));
+  const cropX = Math.max(0, Math.floor((vidW - cropW) / 2));
+  const cropY = Math.max(0, Math.floor((vidH - cropH) / 2));
+
+  return { x: cropX, y: cropY, w: cropW, h: cropH };
+}
+
+function runJsQrOnCanvas(canvas, ctx) {
+  try {
+    if (typeof window.jsQR === 'function') {
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const found = window.jsQR(imgData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+      if (found && found.data) {
+        handleDetectedQrCode(found.data);
+      }
+    }
+  } catch (e) {}
+}
+
 function scanQrFrameLoop() {
   if (!qrIsRunning) return;
   qrScanRafId = requestAnimationFrame(scanQrFrameLoop);
 
   if (qrDetectBusy) return;
-  // 照合中・スロット演出中・結果後2秒クールダウン・🚨ロック中は映像維持のまま読取スキップ
   if (isScannerInputBlocked()) return;
 
-  const video = document.getElementById('qr-video');
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+  // 負荷・発熱を抑えるため約80ms間隔（毎秒約12回）で解析
+  const nowTick = performance.now();
+  if (nowTick - qrLastScanTick < 80) return;
 
+  const video = document.getElementById('qr-video');
+  const canvas = document.getElementById('qr-canvas');
+  if (!video || !canvas || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+
+  qrLastScanTick = nowTick;
   qrDetectBusy = true;
 
+  // 黄色い枠内の映像だけをCanvasへ切り出す（枠外のQRは一切解析対象に入らない）
+  let ctx = null;
+  try {
+    const rect = computeReticleCropRect(video);
+    const targetW = Math.min(rect.w, 480);
+    const targetH = Math.max(1, Math.round((rect.h / rect.w) * targetW));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+    ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, rect.x, rect.y, rect.w, rect.h, 0, 0, targetW, targetH);
+  } catch (e) {
+    qrDetectBusy = false;
+    return;
+  }
+
   if (qrBarcodeDetector) {
-    qrBarcodeDetector.detect(video).then(function(codes) {
+    qrBarcodeDetector.detect(canvas).then(function(codes) {
       qrDetectBusy = false;
       if (!qrIsRunning) return;
       if (codes && codes.length > 0 && codes[0].rawValue) {
         handleDetectedQrCode(codes[0].rawValue);
       }
     }).catch(function() {
+      // 万が一Canvas入力非対応の環境ではjsQRへ自動フォールバック
+      runJsQrOnCanvas(canvas, ctx);
       qrDetectBusy = false;
     });
     return;
   }
 
-  // jsQR フォールバック（非反転の生映像で解析）
-  try {
-    const canvas = document.getElementById('qr-canvas');
-    if (canvas && typeof window.jsQR === 'function') {
-      const targetW = Math.min(video.videoWidth, 640);
-      const targetH = Math.round((video.videoHeight / video.videoWidth) * targetW);
-      if (canvas.width !== targetW || canvas.height !== targetH) {
-        canvas.width = targetW;
-        canvas.height = targetH;
-      }
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0, targetW, targetH);
-      const imgData = ctx.getImageData(0, 0, targetW, targetH);
-      const found = window.jsQR(imgData.data, targetW, targetH, { inversionAttempts: 'dontInvert' });
-      if (found && found.data) {
-        handleDetectedQrCode(found.data);
-      }
-    }
-  } catch (e) {}
+  runJsQrOnCanvas(canvas, ctx);
   qrDetectBusy = false;
 }
 
