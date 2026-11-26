@@ -2,6 +2,13 @@
 // app.js : 打刻・Luckyスロット(ON/OFF・一括ロック)・ヘッダー色連動・E列リンク化・サウンド・🚨ロック・締め作業
 // =========================================================================
 
+// =========================================================================
+// ★バージョン番号・初期タイトル設定（ここを書き換えるだけで画面全体に反映）
+//   例：const APP_VERSION = 'v1.0';  （空欄 '' のままならバージョン非表示）
+// =========================================================================
+const APP_VERSION = '';
+const DEFAULT_APP_TITLE = 'Pokémon GO 奈良 打刻Web Luckyスロット';
+
 const LOCAL_SOUND_KEY = 'NARA_SLOT_SOUNDS_FINAL_V2';
 const LOCAL_REEL_STYLE_KEY = 'NARA_SLOT_REEL_STYLE_FINAL_V1';
 const DEFAULT_SOUNDS = { spin: 'basic', ok: 'basic', win: 'basic', fanfare: 'basic', buzzer: 'basic' };
@@ -63,6 +70,12 @@ window.onload = function() {
   renderAllReels(currentReelSymbols);
   renderSlotPowerState();
 
+  const initialName = (typeof getActiveAppDisplayName === 'function' && getActiveAppDisplayName())
+    ? getActiveAppDisplayName()
+    : DEFAULT_APP_TITLE;
+  updateHeaderTitleUi(initialName);
+  renderSettingsVersionFoot();
+
   if (typeof getGasApiUrl === 'function' && getGasApiUrl()) {
     fetchDashboard(true);
   } else if (typeof openGasUrlModal === 'function') {
@@ -72,6 +85,32 @@ window.onload = function() {
   startPolling();
   setTimeout(() => focusScanInput(), 150);
 };
+
+// =========================================================================
+// ヘッダータイトル ＆ バージョン表記制御
+// =========================================================================
+function updateHeaderTitleUi(baseTitle) {
+  const cleanTitle = String(baseTitle || '').trim() || DEFAULT_APP_TITLE;
+  const ver = String(APP_VERSION || '').trim();
+  const fullText = ver ? (cleanTitle + ' ' + ver) : cleanTitle;
+
+  const titleEl = document.getElementById('header-ss-name');
+  if (titleEl) titleEl.innerText = fullText;
+  document.title = fullText;
+}
+
+function renderSettingsVersionFoot() {
+  const foot = document.getElementById('settings-app-version');
+  if (!foot) return;
+  const ver = String(APP_VERSION || '').trim();
+  if (ver) {
+    foot.innerText = 'App Version: ' + ver;
+    foot.style.display = 'block';
+  } else {
+    foot.innerText = '';
+    foot.style.display = 'none';
+  }
+}
 
 // =========================================================================
 // スロットON/OFF状態判定 ＆ ヘッダー背景色連動
@@ -1340,8 +1379,8 @@ function applyDashboard(data) {
 
   const dispName = (typeof getActiveAppDisplayName === 'function' && getActiveAppDisplayName())
     ? getActiveAppDisplayName()
-    : (data.ssName || 'Pokémon GO 奈良 打刻Web Luckyスロット');
-  document.getElementById('header-ss-name').innerText = '🌸 ' + dispName;
+    : (data.ssName || DEFAULT_APP_TITLE);
+  updateHeaderTitleUi(dispName);
 
   // ホスト専用：確認済み背景色とヘッダー色を自動連動
   applyHeaderColor(hlColor);
@@ -1597,6 +1636,7 @@ function openSettingsModal() {
     document.getElementById('cl-url-' + i).value = lk.url || '';
   }
 
+  renderSettingsVersionFoot();
   openModal('modal-settings');
 }
 
