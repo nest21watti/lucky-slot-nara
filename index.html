@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>🌸 Pokémon GO 奈良 打刻Web Luckyスロット</title>
+<!-- ★ブラウザのタブ名（必要時に書き換え） -->
+<title>Pokémon GO 奈良 打刻Web Luckyスロット</title>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" defer></script>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -24,13 +25,8 @@ html, body {
   border: 1px solid rgba(15, 23, 42, 0.14);
 }
 .top-header.light-bg { color: #0f172a; }
-.top-title { font-size: 0.92rem; font-weight: 800; line-height: 1.2; flex: 1; min-width: 0; }
+.top-title { font-size: 0.92rem; font-weight: 800; line-height: 1.25; flex: 1; min-width: 0; word-break: break-word; }
 .header-right { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
-.final-badge {
-  background: #facc15; color: #713f12;
-  font-size: 0.68rem; font-weight: 900;
-  padding: 3px 7px; border-radius: 999px; white-space: nowrap;
-}
 .conn-btn {
   background: rgba(255,255,255,0.2); color: inherit;
   border: 1px solid rgba(255,255,255,0.45); border-radius: 8px;
@@ -142,8 +138,8 @@ html, body {
 }
 .qr-reticle {
   position: absolute; width: 165px; height: 165px;
-  border: 3px solid rgba(250, 204, 21, 0.9); border-radius: 12px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+  border: 3px solid rgba(250, 204, 21, 0.95); border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.42);
   pointer-events: none;
 }
 .qr-bar {
@@ -293,7 +289,7 @@ html, body {
 .poll-btn.paused { background: #fef3c7; color: #92400e; }
 .count-pill { font-size: 0.78rem; font-weight: 800; color: #334155; }
 
-/* テーブル共通 */
+/* テーブル共通（縦・横の枠線あり） */
 .table-wrap {
   background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px;
   overflow: auto; -webkit-overflow-scrolling: touch;
@@ -302,13 +298,17 @@ html, body {
 table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.8rem; }
 th {
   position: sticky; top: 0; background: #e2e8f0; color: #1e293b;
-  padding: 6px 6px; text-align: left; font-weight: 800; border-bottom: 2px solid #cbd5e1;
+  padding: 6px 6px; text-align: left; font-weight: 800;
+  border-bottom: 2px solid #cbd5e1; border-right: 1px solid #cbd5e1;
   white-space: nowrap; z-index: 2;
 }
+th:last-child { border-right: none; }
 td {
-  padding: 6px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: middle;
-  white-space: nowrap;
+  padding: 6px 6px;
+  border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0;
+  vertical-align: middle; white-space: nowrap;
 }
+td:last-child { border-right: none; }
 .td-red { color: #dc2626; font-weight: 800; }
 .td-notif {
   font-weight: 800; color: #b45309;
@@ -589,6 +589,12 @@ table.winner-grid-table td.col-row-num {
   font-size: 0.8rem; font-weight: 800; margin-top: 6px; min-height: 1.2em;
 }
 
+/* 設定モーダル下部のバージョン表示（APP_VERSION設定時のみ表示） */
+.settings-ver-foot {
+  display: none; text-align: right; margin-top: 10px;
+  font-size: 0.74rem; font-weight: 800; color: #64748b;
+}
+
 /* 処理中ロック＆トースト＆紙吹雪 */
 #busy-overlay {
   display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.55);
@@ -618,9 +624,9 @@ table.winner-grid-table td.col-row-num {
 
 <!-- 上部ヘッダー（確認済み背景色と自動連動） -->
 <div class="top-header" id="top-header">
-  <div class="top-title" id="header-ss-name">🌸 Pokémon GO 奈良 打刻Web Luckyスロット</div>
+  <!-- ★初期タイトル（読み込み前のみ表示。接続後はシート名＋app.jsのAPP_VERSIONで自動上書き） -->
+  <div class="top-title" id="header-ss-name">Pokémon GO 奈良 打刻Web Luckyスロット</div>
   <div class="header-right">
-    <span class="final-badge">QR/NFC版</span>
     <button type="button" id="conn-btn" class="conn-btn" onclick="openGasUrlModal()">🔌 接続</button>
   </div>
 </div>
@@ -650,11 +656,11 @@ table.winner-grid-table td.col-row-num {
     <!-- NFC待機ステータス -->
     <div id="nfc-status-bar" class="nfc-status-bar">📶 NFCタグ待機中：スマホ背面にタグをかざしてください</div>
 
-    <!-- カメラQRプレビュー枠（③-1〜③-3反映） -->
+    <!-- カメラQRプレビュー枠（黄色い枠内のみ解析） -->
     <div id="qr-reader-panel" class="qr-reader-panel">
       <div class="qr-video-wrap" id="qr-video-wrap">
         <video id="qr-video" playsinline muted autoplay></video>
-        <div class="qr-reticle"></div>
+        <div class="qr-reticle" id="qr-reticle"></div>
         <canvas id="qr-canvas" style="display:none;"></canvas>
       </div>
       <div class="qr-bar">
@@ -1022,6 +1028,7 @@ table.winner-grid-table td.col-row-num {
         <button type="button" class="action-btn btn-blue" onclick="saveSettingsFromModal()">💾 設定を保存</button>
         <button type="button" class="action-btn btn-red" onclick="confirmResetSlotHistory()">🔄 スロット履歴をリセット</button>
       </div>
+      <div id="settings-app-version" class="settings-ver-foot"></div>
     </div>
   </div>
 </div>
@@ -1054,7 +1061,8 @@ table.winner-grid-table td.col-row-num {
   </div>
 </div>
 
-<script src="device.js"></script>
-<script src="app.js"></script>
+<!-- ★将来バージョンアップ時に ?v= の後ろ（例: ?v=1.0）を変えると全端末のキャッシュが自動切替されます -->
+<script src="device.js?v=0"></script>
+<script src="app.js?v=0"></script>
 </body>
 </html>
