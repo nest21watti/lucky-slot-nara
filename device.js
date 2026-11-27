@@ -533,7 +533,7 @@ function updateCameraStatusUi() {
     label.innerText = '⏳ 照合中…';
   } else if (slotBusy) {
     panel.classList.add('cam-busy');
-    label.innerText = '🎰 スロット演出中…';
+    label.innerText = '🎰 スロット抽選中…';
   } else if (slotOff) {
     panel.classList.add('cam-fast');
     label.innerText = '⚡ 枠内に合わせて読取（' + getCameraFacingLabel() + '）';
