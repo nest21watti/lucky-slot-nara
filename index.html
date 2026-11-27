@@ -286,7 +286,7 @@ html, body {
   border-radius: 8px; border: 1px solid #cbd5e1; background: #ecfdf5;
   color: #065f46; cursor: pointer;
 }
-.poll-btn.paused { background: #fef3c7; color: #92400e; }
+.poll-btn.paused { background: #fef3c7; color: #92400e; border-color: #f59e0b; }
 .count-pill { font-size: 0.78rem; font-weight: 800; color: #334155; }
 
 /* テーブル共通（縦・横の枠線あり） */
@@ -328,7 +328,7 @@ select.st-sel {
 }
 .done-btn.ok { background: #fde047; color: #713f12; border-color: #ca8a04; }
 
-/* セクションカード（リスト専用ページ） */
+/* セクションカード（設定 / 締めページ） */
 .section-card {
   background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px;
   padding: 10px; margin-bottom: 10px;
@@ -349,6 +349,7 @@ select.st-sel {
 .btn-purple { background: #7c3aed; color: #ffffff; }
 .btn-green { background: #16a34a; color: #ffffff; }
 .btn-teal { background: #0d9488; color: #ffffff; }
+.btn-amber { background: #d97706; color: #ffffff; }
 .btn-red { background: #dc2626; color: #ffffff; }
 .btn-sub { background: #f8fafc; color: #1e293b; border: 2px solid #cbd5e1; }
 
@@ -420,6 +421,38 @@ select.st-sel {
 }
 .prob-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; align-items: center; }
 .prob-grid span { font-size: 0.78rem; font-weight: 800; }
+
+/* スロット履歴確認モーダル（閲覧専用） */
+.hist-summary-bar {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px;
+  background: #fefce8; border: 1px solid #fde047; border-radius: 8px;
+  padding: 7px 10px; margin-bottom: 8px; flex-shrink: 0;
+  font-size: 0.8rem; font-weight: 800; color: #713f12;
+}
+.hist-limit-note {
+  font-size: 0.74rem; font-weight: 800; color: #475569;
+}
+.hist-sort-bar {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  margin-bottom: 8px; flex-shrink: 0;
+}
+.hist-sort-btn {
+  padding: 7px 4px; font-size: 0.78rem; font-weight: 800;
+  border-radius: 8px; border: 1px solid #cbd5e1;
+  background: #f8fafc; color: #334155; cursor: pointer; text-align: center;
+}
+.hist-sort-btn.active {
+  background: #2563eb; color: #ffffff; border-color: #1d4ed8;
+}
+.hist-row-reached {
+  background: #fef9c3;
+}
+.hist-wins-cell {
+  text-align: center; font-weight: 900;
+}
+.hist-wins-reached {
+  color: #b45309;
+}
 
 /* ホスト別 確認済み背景色ピッカー（ヘッダー色とも連動） */
 .color-pick-row {
@@ -633,11 +666,11 @@ table.winner-grid-table td.col-row-num {
 
 <!-- ページ切替タブ -->
 <div class="nav-tabs">
-  <button type="button" id="nav-scan" class="nav-btn active" onclick="switchPage('scan')">📱 スキャナー / 入力</button>
-  <button type="button" id="nav-list" class="nav-btn" onclick="switchPage('list')">📋 リスト専用ページ</button>
+  <button type="button" id="nav-scan" class="nav-btn active" onclick="switchPage('scan')">✅ 受付 / 打刻</button>
+  <button type="button" id="nav-list" class="nav-btn" onclick="switchPage('list')">⚙️ 設定 / 締め</button>
 </div>
 
-<!-- ==================== ページ1：スキャナー / 入力 ==================== -->
+<!-- ==================== ページ1：受付 / 打刻 ==================== -->
 <div id="page-scan">
   <div class="scan-box" id="scan-box">
     <div class="scan-row">
@@ -718,7 +751,7 @@ table.winner-grid-table td.col-row-num {
   </div>
 </div>
 
-<!-- ==================== ページ2：リスト専用ページ ==================== -->
+<!-- ==================== ページ2：設定 / 締め ==================== -->
 <div id="page-list" style="display:none;">
   <div class="status-bar">
     <button type="button" id="poll-btn-2" class="poll-btn" onclick="togglePolling()">🟢 自動更新中</button>
@@ -741,6 +774,7 @@ table.winner-grid-table td.col-row-num {
     <div class="section-title">📊 データ参照・各種設定</div>
     <div class="btn-stack">
       <button type="button" class="action-btn btn-blue" onclick="openFullLogModal()">👁️ 打刻ログ（全列 A〜H）を参照する</button>
+      <button type="button" class="action-btn btn-amber" onclick="openSlotHistoryModal()">🎰 スロット履歴を参照する（閲覧専用）</button>
       <button type="button" class="action-btn btn-sub" onclick="openSettingsModal()">⚙️ スロット・アプリ設定</button>
       <button type="button" class="action-btn btn-sub" onclick="openGasUrlModal()">🔌 接続先GAS URL設定（アプリ切替）</button>
     </div>
@@ -832,6 +866,33 @@ table.winner-grid-table td.col-row-num {
           <tr><th>行</th><th>A:Status</th><th>B:Done</th><th>C:Notif</th><th>D:Formatted</th><th>E:Stamping</th><th>F:Shiny</th><th>G:Event</th><th>H:Slot</th></tr>
         </thead>
         <tbody id="full-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== モーダル1-B：🎰 スロット履歴参照（閲覧専用） ==================== -->
+<div id="modal-slot-history" class="modal-bg">
+  <div class="modal-card wide-modal">
+    <div class="modal-head">
+      <h3>🎰 スロット履歴（閲覧専用）</h3>
+      <button type="button" class="close-x" onclick="closeModal('modal-slot-history')">閉じる</button>
+    </div>
+    <div class="hist-summary-bar">
+      <span id="slot-hist-summary">⏳ 読み込み中...</span>
+      <span id="slot-hist-limit-note" class="hist-limit-note"></span>
+    </div>
+    <div class="hist-sort-bar">
+      <button type="button" id="hist-sort-wins" class="hist-sort-btn active" onclick="setSlotHistorySort('wins')">回数順</button>
+      <button type="button" id="hist-sort-recent" class="hist-sort-btn" onclick="setSlotHistorySort('recent')">新しい順</button>
+      <button type="button" id="hist-sort-order" class="hist-sort-btn" onclick="setSlotHistorySort('order')">登録順</button>
+    </div>
+    <div class="modal-scroll-body" style="border:1px solid #cbd5e1; border-radius:8px;">
+      <table>
+        <thead>
+          <tr><th>対象者</th><th style="text-align:center;">当たり回数</th><th>最終当選日時</th></tr>
+        </thead>
+        <tbody id="slot-hist-tbody"></tbody>
       </table>
     </div>
   </div>
@@ -1061,8 +1122,8 @@ table.winner-grid-table td.col-row-num {
   </div>
 </div>
 
-<!-- ★将来バージョンアップ時に ?v= の後ろ（例: ?v=1.0）を変えると全端末のキャッシュが自動切替されます -->
-<script src="device.js?v=0"></script>
-<script src="app.js?v=0"></script>
+<!-- ★将来バージョンアップ時に ?v= の後ろ（例: ?v=1.1）を変えると全端末のキャッシュが自動切替されます -->
+<script src="device.js?v=1"></script>
+<script src="app.js?v=1"></script>
 </body>
 </html>
