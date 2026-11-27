@@ -1,5 +1,5 @@
 // =========================================================================
-// app.js : 打刻・Luckyスロット(ON/OFF・一括ロック)・ヘッダー色連動・E列リンク化・サウンド・🚨ロック・締め作業
+// app.js : 打刻・Luckyスロット(ON/OFF・一括ロック)・ヘッダー色連動・E列リンク化・サウンド・🚨ロック・スロット履歴閲覧・自動更新カウントダウン・締め作業
 // =========================================================================
 
 // =========================================================================
@@ -19,9 +19,9 @@ let activeReelStyle = loadLocalReelStyle();
 let currentReelSymbols = ['7', '7', '7'];
 
 let isManualKb = false;
-let isPolling = true;
 let pollTimer = null;
 let pauseUntil = 0;
+let pauseCountdownTimer = null;
 let scanTimer = null;
 let lastScanStr = '';
 let lastScanTime = 0;
@@ -56,6 +56,10 @@ let forceStopRequested = false;
 let slotFinalized = false;
 const REEL_POOL = ['7', '🌸', 'BAR', '🔔', '🍇', '🍒'];
 
+// スロット履歴モーダル用（閲覧専用）
+let lastSlotHistoryData = null;
+let slotHistorySortMode = 'wins'; // 'wins'（回数順） | 'recent'（新しい順） | 'order'（登録順）
+
 // 当選者シート編集用
 let lastWinnerData = null;
 let winnerViewMode = 'table';
@@ -69,6 +73,7 @@ window.onload = function() {
   initFocusGuardListeners();
   renderAllReels(currentReelSymbols);
   renderSlotPowerState();
+  updatePollButtonsUi();
 
   const initialName = (typeof getActiveAppDisplayName === 'function' && getActiveAppDisplayName())
     ? getActiveAppDisplayName()
@@ -316,7 +321,7 @@ function showToast(msg) {
 }
 
 function isAnyModalOpen() {
-  return ['modal-gas-url', 'modal-full', 'modal-settings', 'modal-log-edit', 'modal-winner'].some(mid => {
+  return ['modal-gas-url', 'modal-full', 'modal-slot-history', 'modal-settings', 'modal-log-edit', 'modal-winner'].some(mid => {
     const el = document.getElementById(mid);
     return el && el.style.display === 'flex';
   });
@@ -1311,33 +1316,76 @@ function launchConfetti() {
 }
 
 // =========================================================================
-// 自動更新・ダッシュボード描画
+// 自動更新・カウントダウン一時停止（自動復帰）・ダッシュボード描画
 // =========================================================================
 function startPolling() {
   clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    if (!isPolling || Date.now() < pauseUntil || window.isDropdownActive || isSubmittingScan || isSlotInputLocked) return;
+    if (Date.now() < pauseUntil || window.isDropdownActive || isSubmittingScan || isSlotInputLocked) return;
     if (typeof getGasApiUrl === 'function' && !getGasApiUrl()) return;
     fetchDashboard(false);
   }, 5000);
 }
 
+function updatePollButtonsUi() {
+  const remainMs = pauseUntil - Date.now();
+  const isPausedNow = remainMs > 0;
+  const remainSec = isPausedNow ? Math.ceil(remainMs / 1000) : 0;
+  const label = isPausedNow ? `⏸️ 一時停止 (${remainSec}秒)` : '🟢 自動更新中';
+
+  ['poll-btn-1', 'poll-btn-2'].forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.innerText = label;
+    b.className = 'poll-btn' + (isPausedNow ? ' paused' : '');
+  });
+}
+
+function clearAutoRefreshPause(shouldFetchNow) {
+  pauseUntil = 0;
+  if (pauseCountdownTimer) {
+    clearInterval(pauseCountdownTimer);
+    pauseCountdownTimer = null;
+  }
+  updatePollButtonsUi();
+
+  if (shouldFetchNow && !window.isDropdownActive && !isSubmittingScan && !isSlotInputLocked) {
+    if (typeof getGasApiUrl === 'function' && getGasApiUrl()) {
+      fetchDashboard(false);
+    }
+  }
+}
+
 function pauseAutoRefreshTemporarily() {
-  const sec = (state.settings && state.settings.pauseSeconds) ? state.settings.pauseSeconds : 15;
+  const rawSec = (state.settings && Number(state.settings.pauseSeconds) > 0)
+    ? Number(state.settings.pauseSeconds)
+    : 15;
+  const sec = Math.max(1, Math.round(rawSec));
   pauseUntil = Date.now() + sec * 1000;
+  updatePollButtonsUi();
+
+  if (pauseCountdownTimer) {
+    clearInterval(pauseCountdownTimer);
+    pauseCountdownTimer = null;
+  }
+
+  pauseCountdownTimer = setInterval(() => {
+    if (Date.now() >= pauseUntil) {
+      clearAutoRefreshPause(true);
+    } else {
+      updatePollButtonsUi();
+    }
+  }, 500);
 }
 
 function togglePolling() {
-  isPolling = !isPolling;
-  const label = isPolling ? '🟢 自動更新中' : '⏸️ 停止中';
-  ['poll-btn-1', 'poll-btn-2'].forEach(id => {
-    const b = document.getElementById(id);
-    b.innerText = label;
-    b.className = 'poll-btn' + (isPolling ? '' : ' paused');
-  });
-  if (isPolling) {
-    pauseUntil = 0;
+  if (Date.now() < pauseUntil) {
+    // カウントダウン中に押した場合は即座に自動更新へ復帰＋最新データ取得
+    clearAutoRefreshPause(false);
     fetchDashboard(true);
+  } else {
+    // 自動更新中に押した場合は設定秒数だけ一時停止（0秒で自動復帰）
+    pauseAutoRefreshTemporarily();
   }
   if (!isAlertLocked) setTimeout(() => focusScanInput(), 40);
 }
@@ -1549,7 +1597,7 @@ function fallbackCopyCol(text, col, len) {
 }
 
 // =========================================================================
-// モーダル1：全列参照 ＆ モーダル2：設定
+// モーダル1：全列参照 ＆ モーダル1-B：スロット履歴参照（閲覧専用） ＆ モーダル2：設定
 // =========================================================================
 function openFullLogModal() {
   const rev = (state.rows || []).slice().reverse();
@@ -1560,6 +1608,111 @@ function openFullLogModal() {
     <td title="${escapeHtml(r.e)}">${formatColECellHtml(r.e, false)}</td><td>${escapeHtml(r.f)}</td><td>${escapeHtml(r.g)}</td><td>${escapeHtml(r.h)}</td>
   </tr>`).join('');
   openModal('modal-full');
+}
+
+function openSlotHistoryModal() {
+  slotHistorySortMode = 'wins'; // 初期表示は回数順
+  updateSlotHistorySortButtons();
+  document.getElementById('slot-hist-summary').innerText = '⏳ スロット履歴を読み込み中...';
+  document.getElementById('slot-hist-limit-note').innerText = '';
+  document.getElementById('slot-hist-tbody').innerHTML =
+    '<tr><td colspan="3" style="text-align:center; padding:18px; color:#64748b; font-weight:bold;">⏳ 読み込み中...</td></tr>';
+  openModal('modal-slot-history');
+
+  callGasApi('getSlotHistory', [])
+    .then(function(data) {
+      lastSlotHistoryData = data || { items: [], fairLimit: 0, slotMode: 'normal' };
+      renderSlotHistoryModal();
+    })
+    .catch(function(err) {
+      const msg = String((err && err.message) ? err.message : err);
+      document.getElementById('slot-hist-summary').innerText = '⚠️ 履歴を取得できませんでした';
+      document.getElementById('slot-hist-limit-note').innerText = '';
+      if (msg.indexOf('未対応のアクション') !== -1) {
+        document.getElementById('slot-hist-tbody').innerHTML =
+          '<tr><td colspan="3" style="white-space:normal; padding:16px; color:#dc2626; font-weight:bold; line-height:1.5;">この接続先のGASが旧バージョンのため、スロット履歴取得に未対応です。<br>GAS側の「コード.gs」を最新版へ更新し、新バージョンでデプロイしてください。</td></tr>';
+      } else {
+        document.getElementById('slot-hist-tbody').innerHTML =
+          `<tr><td colspan="3" style="white-space:normal; padding:16px; color:#dc2626; font-weight:bold;">エラー: ${escapeHtml(msg)}</td></tr>`;
+      }
+    });
+}
+
+function updateSlotHistorySortButtons() {
+  const map = {
+    wins: 'hist-sort-wins',
+    recent: 'hist-sort-recent',
+    order: 'hist-sort-order'
+  };
+  Object.keys(map).forEach(k => {
+    const btn = document.getElementById(map[k]);
+    if (btn) btn.className = 'hist-sort-btn' + (slotHistorySortMode === k ? ' active' : '');
+  });
+}
+
+function setSlotHistorySort(mode) {
+  if (mode !== 'wins' && mode !== 'recent' && mode !== 'order') return;
+  slotHistorySortMode = mode;
+  updateSlotHistorySortButtons();
+  if (lastSlotHistoryData) {
+    renderSlotHistoryModal();
+  }
+}
+
+function renderSlotHistoryModal() {
+  const data = lastSlotHistoryData || { items: [], fairLimit: 0, slotMode: 'normal' };
+  const items = Array.isArray(data.items) ? data.items.slice() : [];
+  const limit = Number(data.fairLimit) || 0;
+
+  const totalCount = items.length;
+  const reachedCount = (limit > 0) ? items.filter(it => (Number(it.wins) || 0) >= limit).length : 0;
+
+  const summaryEl = document.getElementById('slot-hist-summary');
+  const noteEl = document.getElementById('slot-hist-limit-note');
+  if (limit > 0) {
+    summaryEl.innerText = `計 ${totalCount}名（うち上限到達 ${reachedCount}名）`;
+    noteEl.innerText = `現在の上限設定: ${limit}回まで`;
+  } else {
+    summaryEl.innerText = `計 ${totalCount}名`;
+    noteEl.innerText = '現在の上限設定: 上限なし';
+  }
+
+  if (items.length === 0) {
+    document.getElementById('slot-hist-tbody').innerHTML =
+      '<tr><td colspan="3" style="text-align:center; padding:20px; color:#64748b; font-weight:bold;">まだスロット履歴がありません</td></tr>';
+    return;
+  }
+
+  if (slotHistorySortMode === 'wins') {
+    items.sort((a, b) => {
+      const diff = (Number(b.wins) || 0) - (Number(a.wins) || 0);
+      if (diff !== 0) return diff;
+      const cmpTime = String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
+      if (cmpTime !== 0) return cmpTime;
+      return (Number(b.order) || 0) - (Number(a.order) || 0);
+    });
+  } else if (slotHistorySortMode === 'recent') {
+    items.sort((a, b) => {
+      const cmpTime = String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
+      if (cmpTime !== 0) return cmpTime;
+      return (Number(b.order) || 0) - (Number(a.order) || 0);
+    });
+  } else {
+    items.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+  }
+
+  document.getElementById('slot-hist-tbody').innerHTML = items.map(it => {
+    const wins = Number(it.wins) || 0;
+    const isReached = (limit > 0 && wins >= limit);
+    const trCls = isReached ? ' class="hist-row-reached"' : '';
+    const winCls = 'hist-wins-cell' + (isReached ? ' hist-wins-reached' : '');
+    const winDisp = isReached ? `${wins}回 (上限)` : `${wins}回`;
+    return `<tr${trCls}>
+      <td style="font-weight:800;">${escapeHtml(it.name)}</td>
+      <td class="${winCls}">${escapeHtml(winDisp)}</td>
+      <td style="font-size:0.76rem; color:#475569;">${escapeHtml(it.lastAt)}</td>
+    </tr>`;
+  }).join('');
 }
 
 function syncColorInputs(from) {
