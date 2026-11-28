@@ -1,2147 +1,1747 @@
 // =========================================================================
-// app.js : 打刻・Luckyスロット(ON/OFF・一括ロック)・ヘッダー色連動・E列リンク化・サウンド・🚨ロック・スロット履歴閲覧・自動更新カウントダウン・締め作業
+// Pokémon GO 奈良 打刻Web Luckyスロット【app.js 完全版】
 // =========================================================================
 
-// =========================================================================
-// ★バージョン番号・初期タイトル設定（ここを書き換えるだけで画面全体に反映）
-//   例：const APP_VERSION = 'v1.0';  （空欄 '' のままならバージョン非表示）
-// =========================================================================
-const APP_VERSION = '';
-const DEFAULT_APP_TITLE = 'Pokémon GO 奈良 打刻Web Luckyスロット';
+(function () {
+  'use strict';
 
-const LOCAL_SOUND_KEY = 'NARA_SLOT_SOUNDS_FINAL_V2';
-const LOCAL_REEL_STYLE_KEY = 'NARA_SLOT_REEL_STYLE_FINAL_V1';
-const DEFAULT_SOUNDS = { spin: 'basic', ok: 'basic', win: 'basic', fanfare: 'basic', buzzer: 'basic' };
-
-let state = { rows: [], fList: [], gList: [], settings: null, destUrls: {}, hash: '' };
-let activeSounds = loadLocalSounds();
-let activeReelStyle = loadLocalReelStyle();
-let currentReelSymbols = ['7', '7', '7'];
-
-let isManualKb = false;
-let pollTimer = null;
-let pauseUntil = 0;
-let pauseCountdownTimer = null;
-let scanTimer = null;
-let lastScanStr = '';
-let lastScanTime = 0;
-let isMuted = false;
-let isBusyOverlayVisible = false;
-let isSubmittingScan = false;
-let isSlotInputLocked = false; // スロット回転中＋結果表示後2秒間の一括ロックフラグ
-window.isDropdownActive = false;
-
-// 共有AudioContext＆タイマー管理
-let sharedAudioCtx = null;
-let spinSoundTimer = null;
-let spinTickStep = 0;
-let testSpinTimeout = null;
-let alertSoundTimer = null;
-let toastTimer = null;
-let slotCooldownTimer = null;
-
-// 🚨 永続フラッシュ＆完全スキャンロック（0.5秒以上間隔2回タップ解除用）
-let isAlertFlashing = false;
-let isAlertLocked = false;
-let alertTapCount = 0;
-let alertFirstTapTime = 0;
-let lastLockWarnTime = 0;
-
-// スロット演出用（3リール順番停止＆即停止対応）
-let reelIntervals = [null, null, null];
-let stopTimers = [null, null, null];
-let isSpinning = false;
-let pendingSlotContext = null;
-let forceStopRequested = false;
-let slotFinalized = false;
-const REEL_POOL = ['7', '🌸', 'BAR', '🔔', '🍇', '🍒'];
-
-// スロット履歴モーダル用（閲覧専用）
-let lastSlotHistoryData = null;
-let slotHistorySortMode = 'wins'; // 'wins'（回数順） | 'recent'（新しい順） | 'order'（登録順）
-
-// 当選者シート編集用
-let lastWinnerData = null;
-let winnerViewMode = 'table';
-let winnerCellStore = {};
-let winnerColHeaderStore = {};
-
-window.onload = function() {
-  if (typeof initDeviceLayer === 'function') initDeviceLayer();
-  initAudioUnlockListeners();
-  initScanListeners();
-  initFocusGuardListeners();
-  renderAllReels(currentReelSymbols);
-  renderSlotPowerState();
-  updatePollButtonsUi();
-
-  const initialName = (typeof getActiveAppDisplayName === 'function' && getActiveAppDisplayName())
-    ? getActiveAppDisplayName()
-    : DEFAULT_APP_TITLE;
-  updateHeaderTitleUi(initialName);
-  renderSettingsVersionFoot();
-
-  if (typeof getGasApiUrl === 'function' && getGasApiUrl()) {
-    fetchDashboard(true);
-  } else if (typeof openGasUrlModal === 'function') {
-    openGasUrlModal();
-  }
-
-  startPolling();
-  setTimeout(() => focusScanInput(), 150);
-};
-
-// =========================================================================
-// ヘッダータイトル ＆ バージョン表記制御
-// =========================================================================
-function updateHeaderTitleUi(baseTitle) {
-  const cleanTitle = String(baseTitle || '').trim() || DEFAULT_APP_TITLE;
-  const ver = String(APP_VERSION || '').trim();
-  const fullText = ver ? (cleanTitle + ' ' + ver) : cleanTitle;
-
-  const titleEl = document.getElementById('header-ss-name');
-  if (titleEl) titleEl.innerText = fullText;
-  document.title = fullText;
-}
-
-function renderSettingsVersionFoot() {
-  const foot = document.getElementById('settings-app-version');
-  if (!foot) return;
-  const ver = String(APP_VERSION || '').trim();
-  if (ver) {
-    foot.innerText = 'App Version: ' + ver;
-    foot.style.display = 'block';
-  } else {
-    foot.innerText = '';
-    foot.style.display = 'none';
-  }
-}
-
-// =========================================================================
-// スロットON/OFF状態判定 ＆ ヘッダー背景色連動
-// =========================================================================
-function isSlotFeatureEnabled() {
-  if (!state.settings) return true;
-  return state.settings.slotEnabled !== false;
-}
-
-function isLightHexColor(hex) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
-  if (!m) return false;
-  const n = parseInt(m[1], 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return lum > 0.6;
-}
-
-function applyHeaderColor(hexColor) {
-  const header = document.getElementById('top-header');
-  if (!header) return;
-  const color = /^#[0-9a-fA-F]{6}$/.test(String(hexColor || '')) ? hexColor : '#1e3a8a';
-  header.style.backgroundColor = color;
-  header.classList.toggle('light-bg', isLightHexColor(color));
-}
-
-function syncAllInputLockStates() {
-  const blocked = isAlertLocked || isSubmittingScan || isSlotInputLocked;
-  const inp = document.getElementById('scan-input');
-  const sendBtn = document.getElementById('send-btn');
-
-  if (inp && !isAlertLocked) {
-    inp.disabled = blocked;
-  }
-  if (sendBtn && !isAlertLocked) {
-    sendBtn.disabled = blocked;
-  }
-  if (typeof updateCameraStatusUi === 'function') {
-    updateCameraStatusUi();
-  }
-}
-
-function renderSlotPowerState() {
-  const enabled = isSlotFeatureEnabled();
-  const card = document.getElementById('slot-card');
-  const reelsWrap = document.getElementById('slot-reels-wrap');
-  const btn = document.getElementById('slot-power-btn');
-  const badge = document.getElementById('slot-mode-badge');
-
-  if (card) card.classList.toggle('slot-disabled-card', !enabled);
-  if (reelsWrap) reelsWrap.style.display = enabled ? 'block' : 'none';
-  if (btn) {
-    btn.innerText = enabled ? '🎰 スロットON' : '⚡ スロットOFF';
-    btn.className = 'slot-power-btn' + (enabled ? '' : ' is-off');
-  }
-  if (badge) {
-    if (!enabled) {
-      badge.innerText = '⚡ 自動高速打刻モード（スロットOFF）';
-    } else {
-      const modeTxt = (state.settings && state.settings.slotMode === 'fair') ? '⚖️ 満遍なく当選モード' : '🎲 通常モード';
-      badge.innerText = '🎰 ' + modeTxt;
-    }
-  }
-  if (typeof updateCameraStatusUi === 'function') {
-    updateCameraStatusUi();
-  }
-}
-
-function toggleSlotPower() {
-  if (!state.settings) {
-    showToast('⏳ データを読み込み中です');
-    return;
-  }
-  if (isSpinning || isSubmittingScan || isSlotInputLocked) {
-    showToast('⏳ 打刻・演出の完了後に切り替えてください');
-    return;
-  }
-  const nextEnabled = !isSlotFeatureEnabled();
-  const msg = nextEnabled
-    ? '🎰 スロット抽選を ON に切り替えますか？'
-    : '⚡ スロットを OFF にして「自動高速打刻モード」に切り替えますか？';
-  if (!confirm(msg)) return;
-
-  const payload = Object.assign({}, state.settings, { slotEnabled: nextEnabled });
-  showBusy('⏳ モード切替中...');
-  callGasApi('saveSettings', [payload])
-    .then(function(dash) {
-      hideBusy();
-      applyDashboard(dash);
-      showToast(nextEnabled ? '🎰 スロットONに切り替えました' : '⚡ スロットOFF（自動高速打刻モード）にしました');
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    })
-    .catch(function(err) {
-      hideBusy();
-      alert(err.message || err);
-    });
-}
-
-// =========================================================================
-// ローカル設定・リール描画
-// =========================================================================
-function loadLocalSounds() {
-  try {
-    const raw = localStorage.getItem(LOCAL_SOUND_KEY);
-    if (raw) return Object.assign({}, DEFAULT_SOUNDS, JSON.parse(raw));
-  } catch (e) {}
-  return Object.assign({}, DEFAULT_SOUNDS);
-}
-
-function saveLocalSounds(sndObj) {
-  activeSounds = Object.assign({}, DEFAULT_SOUNDS, sndObj || {});
-  try { localStorage.setItem(LOCAL_SOUND_KEY, JSON.stringify(activeSounds)); } catch (e) {}
-}
-
-function loadLocalReelStyle() {
-  try {
-    const v = localStorage.getItem(LOCAL_REEL_STYLE_KEY);
-    if (v === 'modern' || v === 'legacy') return v;
-  } catch (e) {}
-  return 'legacy';
-}
-
-function saveLocalReelStyle(styleVal) {
-  activeReelStyle = (styleVal === 'modern') ? 'modern' : 'legacy';
-  try { localStorage.setItem(LOCAL_REEL_STYLE_KEY, activeReelStyle); } catch (e) {}
-  renderAllReels(currentReelSymbols);
-}
-
-function normalizeReelToken(sym) {
-  const s = String(sym || '');
-  if (s === '7' || s === '7️⃣') return '7';
-  if (s === 'BAR' || s === '💳') return 'BAR';
-  return s;
-}
-
-function setReelCell(idx, rawSym) {
-  const el = document.getElementById('reel-' + idx);
-  if (!el) return;
-  const token = normalizeReelToken(rawSym);
-  currentReelSymbols[idx] = token;
-
-  if (activeReelStyle === 'legacy') {
-    if (token === '7') {
-      el.className = 'reel legacy-base legacy-7';
-      el.innerText = '7';
-    } else if (token === 'BAR') {
-      el.className = 'reel legacy-base legacy-bar';
-      el.innerText = 'BAR';
-    } else {
-      el.className = 'reel legacy-base';
-      el.innerText = token;
-    }
-  } else {
-    el.className = 'reel';
-    if (token === '7') el.innerText = '7️⃣';
-    else if (token === 'BAR') el.innerText = '💳';
-    else el.innerText = token;
-  }
-}
-
-function renderAllReels(symbols) {
-  for (let i = 0; i < 3; i++) {
-    setReelCell(i, symbols[i] !== undefined ? symbols[i] : '7');
-  }
-}
-
-function getAudioCtx() {
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  if (!AudioCtx) return null;
-  if (!sharedAudioCtx) sharedAudioCtx = new AudioCtx();
-  if (sharedAudioCtx.state === 'suspended') {
-    sharedAudioCtx.resume().catch(() => {});
-  }
-  return sharedAudioCtx;
-}
-
-function initAudioUnlockListeners() {
-  const unlock = () => { getAudioCtx(); };
-  document.addEventListener('touchstart', unlock, { passive: true });
-  document.addEventListener('click', unlock, { passive: true });
-  document.addEventListener('keydown', unlock, { passive: true });
-}
-
-function showBusy(msg) {
-  isBusyOverlayVisible = true;
-  document.getElementById('busy-msg').innerText = msg || '⏳ 処理中です...';
-  document.getElementById('busy-overlay').style.display = 'flex';
-}
-
-function hideBusy() {
-  isBusyOverlayVisible = false;
-  document.getElementById('busy-overlay').style.display = 'none';
-}
-
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.innerText = msg;
-  t.className = 'show';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = ''; }, 2800);
-}
-
-function isAnyModalOpen() {
-  return ['modal-gas-url', 'modal-full', 'modal-slot-history', 'modal-settings', 'modal-log-edit', 'modal-winner'].some(mid => {
-    const el = document.getElementById(mid);
-    return el && el.style.display === 'flex';
-  });
-}
-
-function openModal(id) {
-  document.getElementById(id).style.display = 'flex';
-  document.body.style.overflow = 'hidden';
-}
-
-function closeModal(id) {
-  if (id === 'modal-settings') {
-    clearTimeout(testSpinTimeout);
-    stopSpinSoundLoop();
-  }
-  document.getElementById(id).style.display = 'none';
-  if (!isAnyModalOpen()) {
-    document.body.style.overflow = '';
-    if (!isAlertLocked) {
-      focusScanInput();
-      setTimeout(() => focusScanInput(), 60);
-    }
-  }
-}
-
-function switchPage(page) {
-  if (page !== 'scan' && typeof stopCameraQr === 'function' && typeof qrIsRunning !== 'undefined' && qrIsRunning) {
-    stopCameraQr();
-  }
-  document.getElementById('page-scan').style.display = (page === 'scan') ? 'block' : 'none';
-  document.getElementById('page-list').style.display = (page === 'list') ? 'block' : 'none';
-  document.getElementById('nav-scan').className = 'nav-btn' + (page === 'scan' ? ' active' : '');
-  document.getElementById('nav-list').className = 'nav-btn' + (page === 'list' ? ' active' : '');
-  if (page === 'scan' && !isAlertLocked && !isManualKb) {
-    focusScanInput();
-    setTimeout(() => focusScanInput(), 60);
-  }
-}
-
-// =========================================================================
-// カーソルフォーカス制御（通常時自動復帰・スクロール抑止・ロック中は完全禁止）
-// =========================================================================
-function focusScanInput(forceForManual) {
-  if (isAlertLocked || isSubmittingScan || isSlotInputLocked) return;
-  if (isAnyModalOpen()) return;
-  if (isBusyOverlayVisible) return;
-  if (window.isDropdownActive) return;
-
-  const scanPage = document.getElementById('page-scan');
-  if (!scanPage || scanPage.style.display === 'none') return;
-  if (isManualKb && !forceForManual) return;
-
-  const el = document.getElementById('scan-input');
-  if (!el || el.disabled || el.readOnly) return;
-
-  el.setAttribute('inputmode', isManualKb ? 'text' : 'none');
-
-  const savedY = window.pageYOffset || document.documentElement.scrollTop || 0;
-  try {
-    el.focus({ preventScroll: true });
-  } catch (e) {
-    el.focus();
-  }
-  const afterY = window.pageYOffset || document.documentElement.scrollTop || 0;
-  if (Math.abs(afterY - savedY) > 1) {
-    window.scrollTo(0, savedY);
-  }
-}
-
-function notifyLockedScanAttempt() {
-  const now = Date.now();
-  if (now - lastLockWarnTime > 900) {
-    lastLockWarnTime = now;
-    playTone('alert');
-    showToast('🔒 🚨重要通知の確認待ち！枠を0.5秒以上あけて2回タップで解除');
-  }
-}
-
-function initFocusGuardListeners() {
-  const blockWhenLocked = function(e) {
-    if (!isAlertLocked) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-    const inp = document.getElementById('scan-input');
-    if (inp) { inp.value = ''; inp.blur(); }
-    if (document.activeElement && document.activeElement !== document.body && typeof document.activeElement.blur === 'function') {
-      document.activeElement.blur();
-    }
-    if (e.type === 'keydown' || e.type === 'paste') {
-      notifyLockedScanAttempt();
-    }
+  // -----------------------------------------------------------------------
+  // 定数・ローカルストレージキー
+  // -----------------------------------------------------------------------
+  var LS_KEYS = {
+    APPS: 'POGO_NARA_GAS_APPS_V2',
+    ACTIVE_APP_ID: 'POGO_NARA_ACTIVE_APP_ID_V2',
+    LEGACY_URL: 'POGO_NARA_GAS_URL',
+    MUTE: 'POGO_NARA_SOUND_MUTE_V1',
+    REEL_STYLE_CACHE: 'POGO_NARA_REEL_STYLE_V1'
   };
-  window.addEventListener('keydown', blockWhenLocked, true);
-  window.addEventListener('keypress', blockWhenLocked, true);
-  window.addEventListener('keyup', blockWhenLocked, true);
-  window.addEventListener('paste', blockWhenLocked, true);
 
-  document.addEventListener('click', function(e) {
-    if (isAlertLocked || isSubmittingScan || isSlotInputLocked || isAnyModalOpen() || isBusyOverlayVisible || window.isDropdownActive || isManualKb) return;
-    const scanPage = document.getElementById('page-scan');
-    if (!scanPage || scanPage.style.display === 'none') return;
-    const target = e.target;
-    if (!target) return;
-    if (target.closest && target.closest('input, select, option, button, textarea, a, label, #recent-card, #qr-reader-panel')) return;
-    focusScanInput();
-  });
-}
+  var POLL_INTERVAL_MS = 5000;
+  var SLOT_SYMBOLS = ['7️⃣', '🌸', '💳', '🔔', '🍇', '🍒'];
+  var PENALTY_SYMBOLS = ['💀', '💣', '🚫', '⚡', '😱'];
 
-function toggleKeyboardMode() {
-  if (isAlertLocked) {
-    notifyLockedScanAttempt();
-    return;
+  // -----------------------------------------------------------------------
+  // アプリ状態
+  // -----------------------------------------------------------------------
+  var state = {
+    apps: [],
+    activeAppId: '',
+    gasUrl: '',
+    ssName: '',
+    hash: '',
+    rows: [],
+    fList: [],
+    gList: [],
+    destUrls: {},
+    settings: {
+      highlightColor: '#fff9b1',
+      slotEnabled: true,
+      slotMode: 'normal',
+      normalProb: { seven: 5, sakura: 10, bar: 15, bell: 0, grape: 0, cherry: 0 },
+      fairProb: { seven: 5, sakura: 10, bar: 15, bell: 0, grape: 0, cherry: 0 },
+      fairLimit: 1,
+      jackpotTarget: 'both',
+      penaltyMode: 'random',
+      slotDelayMs: 0,
+      slotCooldownMs: 1000,
+      pauseSeconds: 15,
+      fLabel: '色違',
+      gLabel: 'Evnt',
+      reelStyle: 'legacy',
+      customLinks: [],
+      sounds: { spin: 'basic', ok: 'basic', win: 'basic', fanfare: 'basic', buzzer: 'basic' }
+    },
+    isConnected: false,
+    isSubmittingScan: false,
+    isRefreshingCache: false,
+    isCooldown: false,
+    isSlotSpinning: false,
+    hasUnconfirmedAlert: false,
+    alertRows: [],
+    // 画面回転モード（端末一時状態：起動時は常に normal）
+    screenRotationMode: 'normal', // 'normal' | 'face' | 'full'
+    // 自動更新制御
+    pollTimerId: null,
+    pauseUntil: 0,
+    manualPaused: false,
+    // 音声ミュート
+    muted: false,
+    // スロット履歴モーダル
+    slotHistoryCache: null,
+    slotHistorySort: 'order',
+    // スロット演出タイマー管理
+    spinIntervalId: null,
+    pendingStopTimers: [],
+    cooldownTimerId: null,
+    currentSpinResolve: null,
+    pendingScanResponse: null
+  };
+
+  // -----------------------------------------------------------------------
+  // ユーティリティ
+  // -----------------------------------------------------------------------
+  function $(id) {
+    return document.getElementById(id);
   }
-  isManualKb = !isManualKb;
-  const btn = document.getElementById('kb-toggle');
-  const inp = document.getElementById('scan-input');
-  btn.className = 'kb-btn' + (isManualKb ? ' on' : '');
-  btn.innerText = isManualKb ? '⌨️ON' : '⌨️OFF';
-  inp.setAttribute('inputmode', isManualKb ? 'text' : 'none');
-  inp.placeholder = isManualKb ? '手動入力モード（Enterか送信を押す）' : 'スキャナー待機中（QR読取 / 会員番号）';
-  focusScanInput(true);
-}
 
-function initScanListeners() {
-  const inp = document.getElementById('scan-input');
+  function escapeHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
-  inp.addEventListener('focus', function() {
-    if (isAlertLocked) { inp.value = ''; inp.blur(); }
-  });
+  function clampNum(val, min, max, def) {
+    var n = parseFloat(val);
+    if (isNaN(n)) return def;
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+  }
 
-  inp.addEventListener('keydown', function(e) {
-    if (isAlertLocked) {
-      e.preventDefault();
-      inp.value = '';
-      inp.blur();
-      notifyLockedScanAttempt();
+  var toastTimer = null;
+  function showToast(msg, durationMs) {
+    var el = $('toast');
+    if (!el) return;
+    el.textContent = String(msg || '');
+    el.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      el.classList.remove('show');
+    }, durationMs || 2600);
+  }
+
+  function isLightColor(hex) {
+    var c = String(hex || '').replace('#', '').trim();
+    if (c.length !== 6) return false;
+    var r = parseInt(c.substring(0, 2), 16);
+    var g = parseInt(c.substring(2, 4), 16);
+    var b = parseInt(c.substring(4, 6), 16);
+    var yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
+    return yiq >= 160;
+  }
+
+  function applyHeaderTheme(hexColor) {
+    var header = $('app-header');
+    if (!header) return;
+    var color = /^#[0-9a-fA-F]{6}$/.test(String(hexColor || '')) ? hexColor : '#1e3a8a';
+    var light = isLightColor(color);
+    header.style.background = color;
+    header.style.color = light ? '#0f172a' : '#ffffff';
+
+    var connBtn = $('conn-btn');
+    var rotBtn = $('rotate-btn');
+    if (connBtn && !connBtn.classList.contains('disconnected')) {
+      connBtn.style.color = light ? '#0f172a' : '#ffffff';
+      connBtn.style.background = light ? 'rgba(15, 23, 42, 0.10)' : 'rgba(255, 255, 255, 0.18)';
+      connBtn.style.borderColor = light ? 'rgba(15, 23, 42, 0.35)' : 'rgba(255, 255, 255, 0.55)';
+    }
+    if (rotBtn && state.screenRotationMode === 'normal') {
+      rotBtn.style.color = light ? '#0f172a' : '#ffffff';
+      rotBtn.style.background = light ? 'rgba(15, 23, 42, 0.10)' : 'rgba(255, 255, 255, 0.16)';
+      rotBtn.style.borderColor = light ? 'rgba(15, 23, 42, 0.35)' : 'rgba(255, 255, 255, 0.55)';
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Web Audio API 効果音エンジン（外部ファイル不要）
+  // -----------------------------------------------------------------------
+  var audioCtx = null;
+
+  function ensureAudioCtx() {
+    if (state.muted) return null;
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      if (!audioCtx) audioCtx = new Ctx();
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(function () {});
+      }
+      return audioCtx;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function playTone(freq, startOffset, duration, type, gainVal) {
+    var ctx = ensureAudioCtx();
+    if (!ctx) return;
+    try {
+      var now = ctx.currentTime + (startOffset || 0);
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+      gain.gain.setValueAtTime(gainVal || 0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    } catch (e) {}
+  }
+
+  function playSoundPreset(kind) {
+    if (state.muted) return;
+    var sounds = (state.settings && state.settings.sounds) || {};
+    var preset = sounds[kind] || 'basic';
+    if (preset === 'off') return;
+
+    var wave = preset === 'arcade' ? 'square' : (preset === 'soft' ? 'triangle' : 'sine');
+    var vol = preset === 'arcade' ? 0.07 : 0.13;
+
+    if (kind === 'spin') {
+      playTone(440, 0, 0.05, wave, vol * 0.7);
+      playTone(554, 0.05, 0.05, wave, vol * 0.7);
+    } else if (kind === 'ok') {
+      playTone(660, 0, 0.06, wave, vol);
+    } else if (kind === 'win') {
+      playTone(523.25, 0.00, 0.12, wave, vol);
+      playTone(659.25, 0.10, 0.12, wave, vol);
+      playTone(783.99, 0.20, 0.16, wave, vol);
+      playTone(1046.5, 0.32, 0.28, wave, vol);
+    } else if (kind === 'fanfare') {
+      var notes = [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.5];
+      var times = [0.00, 0.09, 0.18, 0.27, 0.42, 0.52, 0.64];
+      var durs  = [0.08, 0.08, 0.08, 0.13, 0.08, 0.10, 0.42];
+      for (var i = 0; i < notes.length; i++) {
+        playTone(notes[i], times[i], durs[i], wave, vol * 1.1);
+      }
+    } else if (kind === 'buzzer') {
+      playTone(190, 0.00, 0.18, 'sawtooth', 0.10);
+      playTone(150, 0.20, 0.26, 'sawtooth', 0.10);
+    }
+  }
+
+  function updateMuteButtonUI() {
+    var btn = $('mute-btn');
+    if (!btn) return;
+    if (state.muted) {
+      btn.textContent = '🔇 消音中';
+      btn.classList.add('mute-on');
+    } else {
+      btn.textContent = '🔊 音声ON';
+      btn.classList.remove('mute-on');
+    }
+  }
+
+  function toggleSoundMute() {
+    state.muted = !state.muted;
+    try { localStorage.setItem(LS_KEYS.MUTE, state.muted ? '1' : '0'); } catch (e) {}
+    updateMuteButtonUI();
+    if (!state.muted) {
+      ensureAudioCtx();
+      playSoundPreset('ok');
+    }
+    showToast(state.muted ? '🔇 効果音をOFFにしました' : '🔊 効果音をONにしました', 1600);
+  }
+
+  // -----------------------------------------------------------------------
+  // 180°画面回転切替（通常 → 対面モード → 全体180°反転）
+  // -----------------------------------------------------------------------
+  function applyScreenRotationUI() {
+    var body = document.body;
+    var btn = $('rotate-btn');
+    body.classList.remove('flip-face', 'flip-full');
+    if (btn) {
+      btn.classList.remove('mode-face', 'mode-full');
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+    }
+
+    if (state.screenRotationMode === 'face') {
+      body.classList.add('flip-face');
+      if (btn) btn.classList.add('mode-face');
+    } else if (state.screenRotationMode === 'full') {
+      body.classList.add('flip-full');
+      if (btn) btn.classList.add('mode-full');
+    } else {
+      applyHeaderTheme(state.settings.highlightColor);
+    }
+
+    if (typeof window.syncCameraPanelState === 'function') {
+      window.syncCameraPanelState();
+    }
+  }
+
+  function cycleScreenRotation() {
+    if (state.screenRotationMode === 'normal') {
+      state.screenRotationMode = 'face';
+      applyScreenRotationUI();
+      showToast('🔁 対面モード（スロット＆結果のみ180°反転）', 2400);
+    } else if (state.screenRotationMode === 'face') {
+      state.screenRotationMode = 'full';
+      applyScreenRotationUI();
+      showToast('🔁 全体180°反転（セルフ打刻台用）', 2400);
+    } else {
+      state.screenRotationMode = 'normal';
+      applyScreenRotationUI();
+      showToast('🔁 通常表示に戻しました', 2000);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // GAS API 通信共通関数
+  // -----------------------------------------------------------------------
+  async function callGasApi(action, args, customUrl) {
+    var url = customUrl || state.gasUrl;
+    if (!url) {
+      throw new Error('接続先GAS URLが未設定です。右上の「🔌 未接続」から設定してください。');
+    }
+
+    var res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: action, args: args || [] }),
+      redirect: 'follow'
+    });
+
+    if (!res.ok) {
+      throw new Error('通信エラー (HTTP ' + res.status + ')');
+    }
+    var text = await res.text();
+    var json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      throw new Error('GASからの応答を解析できませんでした（デプロイ権限をご確認ください）。');
+    }
+    if (!json.ok) {
+      throw new Error(json.error || 'GAS側でエラーが発生しました。');
+    }
+    return json.data;
+  }
+
+  // -----------------------------------------------------------------------
+  // 接続先GASアプリ管理（複数アプリ切替＋共有URL対応）
+  // -----------------------------------------------------------------------
+  function loadAppRegistry() {
+    var apps = [];
+    try {
+      var raw = localStorage.getItem(LS_KEYS.APPS);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) apps = parsed;
+      }
+    } catch (e) {}
+
+    // 旧キーからの移行
+    if (apps.length === 0) {
+      try {
+        var oldUrl = localStorage.getItem(LS_KEYS.LEGACY_URL);
+        if (oldUrl && oldUrl.indexOf('http') === 0) {
+          apps.push({
+            id: 'app_' + Date.now(),
+            name: '登録済みアプリ',
+            url: oldUrl.trim(),
+            color: '#fff9b1'
+          });
+        }
+      } catch (e) {}
+    }
+
+    var activeId = '';
+    try { activeId = localStorage.getItem(LS_KEYS.ACTIVE_APP_ID) || ''; } catch (e) {}
+
+    // URLクエリ (?gas=...&name=...) によるワンタップ登録対応
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var qGas = (params.get('gas') || '').trim();
+      var qName = (params.get('name') || '').trim();
+      if (qGas && /^https:\/\/script\.google\.com\/macros\/s\//.test(qGas)) {
+        var existing = apps.find(function (a) { return a.url === qGas; });
+        if (existing) {
+          if (qName) existing.name = qName;
+          activeId = existing.id;
+        } else {
+          var newEntry = {
+            id: 'app_' + Date.now(),
+            name: qName || '共有アプリ',
+            url: qGas,
+            color: '#fff9b1'
+          };
+          apps.push(newEntry);
+          activeId = newEntry.id;
+        }
+        // URLのクエリをきれいに戻す
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+    } catch (e) {}
+
+    state.apps = apps;
+    if (activeId && apps.some(function (a) { return a.id === activeId; })) {
+      state.activeAppId = activeId;
+    } else if (apps.length > 0) {
+      state.activeAppId = apps[0].id;
+    } else {
+      state.activeAppId = '';
+    }
+
+    var activeApp = getActiveApp();
+    state.gasUrl = activeApp ? activeApp.url : '';
+    saveAppRegistry();
+  }
+
+  function saveAppRegistry() {
+    try {
+      localStorage.setItem(LS_KEYS.APPS, JSON.stringify(state.apps));
+      localStorage.setItem(LS_KEYS.ACTIVE_APP_ID, state.activeAppId || '');
+    } catch (e) {}
+  }
+
+  function getActiveApp() {
+    return state.apps.find(function (a) { return a.id === state.activeAppId; }) || null;
+  }
+
+  function updateConnectionBadge(connected) {
+    state.isConnected = !!connected;
+    var btn = $('conn-btn');
+    if (!btn) return;
+    if (connected) {
+      btn.textContent = '🔌 接続済';
+      btn.classList.remove('disconnected');
+      applyHeaderTheme(state.settings.highlightColor);
+    } else {
+      btn.textContent = '🔌 未接続';
+      btn.classList.add('disconnected');
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+    }
+  }
+
+  function renderAppRegistryList() {
+    var listEl = $('app-registry-list');
+    if (!listEl) return;
+    if (state.apps.length === 0) {
+      listEl.innerHTML = '<div class="sub-note">まだGASアプリが登録されていません。下の欄からURLを登録してください。</div>';
       return;
     }
-    if (isSubmittingScan || isSlotInputLocked) {
-      e.preventDefault();
-      inp.value = '';
+
+    var html = state.apps.map(function (app) {
+      var isAct = app.id === state.activeAppId;
+      return (
+        '<div class="app-switch-item ' + (isAct ? 'active' : '') + '">' +
+          '<span class="app-color-dot" style="background:' + escapeHtml(app.color || '#fff9b1') + ';"></span>' +
+          '<div class="app-switch-info" onclick="selectRegisteredApp(\'' + escapeHtml(app.id) + '\')">' +
+            '<div class="app-switch-name">' + (isAct ? '✅ ' : '') + escapeHtml(app.name || '名称未設定') + '</div>' +
+            '<div class="app-switch-sub">' + escapeHtml(app.url) + '</div>' +
+          '</div>' +
+          '<div class="app-switch-acts">' +
+            '<button type="button" class="app-mini-act" title="名前変更" onclick="renameRegisteredApp(\'' + escapeHtml(app.id) + '\')">✏️</button>' +
+            '<button type="button" class="app-mini-act del" title="削除" onclick="deleteRegisteredApp(\'' + escapeHtml(app.id) + '\')">🗑️</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+    listEl.innerHTML = html;
+  }
+
+  function openGasUrlModal() {
+    renderAppRegistryList();
+    var active = getActiveApp();
+    $('gas-url-input').value = active ? active.url : '';
+    $('gas-app-name-input').value = active ? active.name : '';
+    $('gas-conn-msg').textContent = '';
+    openModal('modal-gas-url');
+  }
+
+  async function saveAndTestGasUrl() {
+    var url = ($('gas-url-input').value || '').trim();
+    var customName = ($('gas-app-name-input').value || '').trim();
+    var msgEl = $('gas-conn-msg');
+
+    if (!url || !/^https:\/\/script\.google\.com\/macros\/s\//.test(url)) {
+      msgEl.style.color = '#dc2626';
+      msgEl.textContent = '⚠️ 有効なGASウェブアプリURL（https://script.google.com/macros/s/.../exec）を入力してください。';
       return;
     }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      clearTimeout(scanTimer);
-      if (isManualKb) {
-        submitScan(inp.value);
+
+    msgEl.style.color = '#1d4ed8';
+    msgEl.textContent = '⏳ 接続テスト＆キャッシュ最新化中…';
+
+    try {
+      var pingRes = await callGasApi('ping', [], url);
+      var finalName = customName || (pingRes && pingRes.ssName) || '打刻アプリ';
+
+      var existing = state.apps.find(function (a) { return a.url === url; });
+      if (existing) {
+        existing.name = finalName;
+        state.activeAppId = existing.id;
       } else {
-        scanTimer = setTimeout(() => submitScan(inp.value), 100);
+        var newItem = {
+          id: 'app_' + Date.now(),
+          name: finalName,
+          url: url,
+          color: '#fff9b1'
+        };
+        state.apps.push(newItem);
+        state.activeAppId = newItem.id;
+      }
+      state.gasUrl = url;
+      state.hash = '';
+      saveAppRegistry();
+      renderAppRegistryList();
+
+      await refreshCachesAndDashboard(true);
+      msgEl.style.color = '#16a34a';
+      msgEl.textContent = '✅ 接続成功：' + finalName;
+      closeModal('modal-gas-url');
+      showToast('✅ 接続＆最新化完了：' + finalName);
+    } catch (err) {
+      msgEl.style.color = '#dc2626';
+      msgEl.textContent = '❌ 接続失敗：' + err.message;
+    }
+  }
+
+  async function selectRegisteredApp(appId) {
+    var found = state.apps.find(function (a) { return a.id === appId; });
+    if (!found) return;
+    state.activeAppId = found.id;
+    state.gasUrl = found.url;
+    state.hash = '';
+    saveAppRegistry();
+    renderAppRegistryList();
+    closeModal('modal-gas-url');
+    showToast('🔄 アプリ切替中：' + found.name);
+    await refreshCachesAndDashboard(false);
+  }
+
+  function renameRegisteredApp(appId) {
+    var found = state.apps.find(function (a) { return a.id === appId; });
+    if (!found) return;
+    var nextName = prompt('アプリの表示名を入力してください', found.name || '');
+    if (nextName === null) return;
+    found.name = nextName.trim() || found.name;
+    saveAppRegistry();
+    renderAppRegistryList();
+  }
+
+  function deleteRegisteredApp(appId) {
+    var found = state.apps.find(function (a) { return a.id === appId; });
+    if (!found) return;
+    if (!confirm('「' + found.name + '」を端末のリストから削除しますか？（スプレッドシート本体は消えません）')) return;
+    state.apps = state.apps.filter(function (a) { return a.id !== appId; });
+    if (state.activeAppId === appId) {
+      state.activeAppId = state.apps.length > 0 ? state.apps[0].id : '';
+      state.gasUrl = state.apps.length > 0 ? state.apps[0].url : '';
+      state.hash = '';
+    }
+    saveAppRegistry();
+    renderAppRegistryList();
+    if (state.gasUrl) {
+      refreshCachesAndDashboard(true);
+    } else {
+      updateConnectionBadge(false);
+    }
+  }
+
+  function clearSavedGasUrl() {
+    if (!confirm('この端末に保存されているGAS接続先リストをすべて消去しますか？')) return;
+    state.apps = [];
+    state.activeAppId = '';
+    state.gasUrl = '';
+    state.hash = '';
+    saveAppRegistry();
+    renderAppRegistryList();
+    updateConnectionBadge(false);
+    showToast('🗑️ 接続設定を消去しました');
+  }
+
+  async function copyShareSetupLink() {
+    var active = getActiveApp();
+    var url = ($('gas-url-input').value || (active && active.url) || '').trim();
+    var name = ($('gas-app-name-input').value || (active && active.name) || '').trim();
+    if (!url) {
+      showToast('⚠️ 先にGAS URLを入力してください');
+      return;
+    }
+    var base = window.location.origin + window.location.pathname;
+    var share = base + '?gas=' + encodeURIComponent(url) + (name ? '&name=' + encodeURIComponent(name) : '');
+    try {
+      await navigator.clipboard.writeText(share);
+      showToast('🔗 共有用URLをコピーしました！');
+    } catch (e) {
+      prompt('以下のURLをコピーして共有してください', share);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // タブ＆モーダル制御
+  // -----------------------------------------------------------------------
+  function switchTab(tabName) {
+    var isMain = tabName === 'main';
+    $('page-main').classList.toggle('active', isMain);
+    $('page-settings').classList.toggle('active', !isMain);
+    $('tab-btn-main').classList.toggle('active', isMain);
+    $('tab-btn-settings').classList.toggle('active', !isMain);
+    if (isMain && !state.hasUnconfirmedAlert) {
+      focusScanInputSafe();
+    }
+  }
+
+  function openModal(id) {
+    var el = $(id);
+    if (el) el.classList.add('open');
+  }
+
+  function closeModal(id) {
+    var el = $(id);
+    if (el) el.classList.remove('open');
+  }
+
+  function focusScanInputSafe() {
+    var input = $('scan-input');
+    if (!input || input.disabled) return;
+    // カメラQR起動中やモーダル開中は強制フォーカスしない
+    if (typeof window.isCameraQrRunning === 'function' && window.isCameraQrRunning()) return;
+    if (document.querySelector('.modal-backdrop.open')) return;
+    try { input.focus({ preventScroll: true }); } catch (e) {}
+  }
+
+  // -----------------------------------------------------------------------
+  // キャッシュ一括最新化（起動時 ＆ 手動ボタン2か所共通）
+  // -----------------------------------------------------------------------
+  function setRefreshButtonsDisabled(disabled) {
+    var mini = $('cache-refresh-mini-btn');
+    var hero = $('cache-refresh-hero-btn');
+    if (mini) {
+      mini.disabled = !!disabled;
+      mini.textContent = disabled ? '⏳ 更新中' : '🔄 最新化';
+    }
+    if (hero) {
+      hero.disabled = !!disabled;
+    }
+  }
+
+  async function refreshCachesAndDashboard(silentToast) {
+    if (!state.gasUrl) {
+      updateConnectionBadge(false);
+      return false;
+    }
+    if (state.isRefreshingCache) return false;
+    state.isRefreshingCache = true;
+    setRefreshButtonsDisabled(true);
+
+    try {
+      var res = await callGasApi('refreshAllCaches', []);
+      if (res && res.dashboard) {
+        applyDashboardData(res.dashboard);
+      }
+      updateConnectionBadge(true);
+
+      var summaryText = '名簿 ' + (res.memberCount || 0) + '件 / 当選者 ' + (res.winnerCount || 0) + '件（' + (res.updatedAt || '') + ' 更新・6時間保持）';
+      var noteEl = $('cache-status-note');
+      if (noteEl) {
+        noteEl.textContent = '✅ 最終キャッシュ更新：' + summaryText;
+      }
+      if (!silentToast) {
+        showToast('✅ 最新化完了：名簿' + (res.memberCount || 0) + '件 / 当選者' + (res.winnerCount || 0) + '件', 2600);
+      }
+      return true;
+    } catch (err) {
+      updateConnectionBadge(false);
+      if (!silentToast) {
+        showToast('❌ 最新化に失敗：' + err.message, 3200);
+      }
+      return false;
+    } finally {
+      state.isRefreshingCache = false;
+      setRefreshButtonsDisabled(false);
+    }
+  }
+
+  async function triggerManualCacheRefresh() {
+    if (!state.gasUrl) {
+      openGasUrlModal();
+      return;
+    }
+    if (state.isSubmittingScan || state.isSlotSpinning) {
+      showToast('⏳ 打刻・スロット処理が終わってから押してください', 2000);
+      return;
+    }
+    if (state.hasUnconfirmedAlert) {
+      showToast('🚨 未確認のアラートを「確」にしてから実行してください', 2200);
+      return;
+    }
+    await refreshCachesAndDashboard(false);
+  }
+
+  // -----------------------------------------------------------------------
+  // 自動更新ポーリング（5秒間隔・操作後一時停止カウントダウン対応）
+  // -----------------------------------------------------------------------
+  function pauseAutoPollByAction() {
+    var sec = clampNum(state.settings.pauseSeconds, 5, 120, 15);
+    state.pauseUntil = Date.now() + sec * 1000;
+    updatePollStatusUI();
+  }
+
+  function toggleAutoPollPause() {
+    if (state.manualPaused) {
+      state.manualPaused = false;
+      state.pauseUntil = 0;
+      updatePollStatusUI();
+      pollDashboardOnce(false);
+      showToast('🟢 自動更新を再開しました', 1600);
+    } else if (state.pauseUntil > Date.now()) {
+      state.pauseUntil = 0;
+      updatePollStatusUI();
+      pollDashboardOnce(false);
+      showToast('🟢 一時停止を解除して即時更新しました', 1600);
+    } else {
+      state.manualPaused = true;
+      updatePollStatusUI();
+      showToast('⏸️ 自動更新を一時停止しました', 1600);
+    }
+  }
+
+  function updatePollStatusUI() {
+    var btn = $('poll-status-btn');
+    if (!btn) return;
+    if (!state.isConnected) {
+      btn.textContent = '⚪ 未接続';
+      btn.className = 'sync-pill';
+      return;
+    }
+    if (state.manualPaused) {
+      btn.textContent = '⏸️ 停止中（タップ再開）';
+      btn.className = 'sync-pill paused';
+      return;
+    }
+    var remMs = state.pauseUntil - Date.now();
+    if (remMs > 0) {
+      var remSec = Math.ceil(remMs / 1000);
+      btn.textContent = '⏸️ 待機 ' + remSec + '秒';
+      btn.className = 'sync-pill paused';
+      return;
+    }
+    btn.textContent = '🟢 自動更新中';
+    btn.className = 'sync-pill running';
+  }
+
+  async function pollDashboardOnce(forceFull) {
+    if (!state.gasUrl || state.isSubmittingScan || state.isRefreshingCache || state.isSlotSpinning) return;
+    if (!forceFull && (state.manualPaused || state.pauseUntil > Date.now())) return;
+    if (document.hidden) return;
+
+    try {
+      var data = await callGasApi('getDashboardState', [forceFull ? '' : state.hash, false]);
+      updateConnectionBadge(true);
+      if (data && !data.unchanged) {
+        applyDashboardData(data);
+      }
+    } catch (e) {
+      // 通信の一時揺れは次回ポーリングで自然復帰させる
+    }
+  }
+
+  function startPollingLoop() {
+    if (state.pollTimerId) clearInterval(state.pollTimerId);
+    setInterval(updatePollStatusUI, 1000);
+    state.pollTimerId = setInterval(function () {
+      pollDashboardOnce(false);
+    }, POLL_INTERVAL_MS);
+  }
+
+  // -----------------------------------------------------------------------
+  // ダッシュボード描画（ログ・直近確認・🚨ロック・2ページ目設定反映）
+  // -----------------------------------------------------------------------
+  function applyDashboardData(data) {
+    if (!data) return;
+    if (data.hash) state.hash = data.hash;
+    if (data.ssName) state.ssName = data.ssName;
+    if (Array.isArray(data.rows)) state.rows = data.rows;
+    if (Array.isArray(data.fList)) state.fList = data.fList;
+    if (Array.isArray(data.gList)) state.gList = data.gList;
+    if (data.destUrls) state.destUrls = data.destUrls;
+    if (data.settings) {
+      state.settings = Object.assign({}, state.settings, data.settings);
+      try {
+        localStorage.setItem(LS_KEYS.REEL_STYLE_CACHE, state.settings.reelStyle || 'legacy');
+      } catch (e) {}
+    }
+
+    // 登録アプリの色・名前を最新化
+    var active = getActiveApp();
+    if (active) {
+      if (state.settings.highlightColor) active.color = state.settings.highlightColor;
+      if ((!active.name || active.name === '共有アプリ' || active.name === '登録済みアプリ') && state.ssName) {
+        active.name = state.ssName;
+      }
+      saveAppRegistry();
+    }
+
+    var titleEl = $('header-ss-name');
+    if (titleEl) {
+      titleEl.textContent = (active && active.name) || state.ssName || '打刻Web Luckyスロット';
+    }
+    applyHeaderTheme(state.settings.highlightColor);
+
+    evaluateAlertLock();
+    renderSlotAppearanceIdle();
+    renderLatestCard();
+    renderLogTable();
+    renderSettingsPageDynamic();
+    updateScanControlsLock();
+  }
+
+  function evaluateAlertLock() {
+    var alerts = state.rows.filter(function (r) {
+      return r.a !== '取消' && r.c && r.c.indexOf('🚨') !== -1 && r.b !== '確';
+    });
+    state.alertRows = alerts;
+    state.hasUnconfirmedAlert = alerts.length > 0;
+
+    var banner = $('alert-lock-banner');
+    if (!banner) return;
+    if (state.hasUnconfirmedAlert) {
+      var names = alerts.map(function (r) { return r.d || ('行' + r.rowNum); }).join(' / ');
+      banner.style.display = 'block';
+      banner.innerHTML = '🚨 未確認の重要通知があるため次の打刻をロック中です。<br>対象：' + escapeHtml(names) + '（B列の「未」をタップして「確」にすると解除されます）';
+    } else {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+    }
+
+    if (typeof window.syncCameraPanelState === 'function') {
+      window.syncCameraPanelState();
+    }
+  }
+
+  function updateScanControlsLock() {
+    var blocked = isScanBlocked();
+    var input = $('scan-input');
+    var submitBtn = $('scan-submit-btn');
+    if (input) input.disabled = state.hasUnconfirmedAlert || !state.isConnected;
+    if (submitBtn) submitBtn.disabled = blocked;
+    if (typeof window.syncCameraPanelState === 'function') {
+      window.syncCameraPanelState();
+    }
+  }
+
+  function isScanBlocked() {
+    return !state.isConnected || state.isSubmittingScan || state.isCooldown || state.isSlotSpinning || state.hasUnconfirmedAlert;
+  }
+
+  function isAlertLocked() {
+    return state.hasUnconfirmedAlert;
+  }
+
+  function renderSlotAppearanceIdle() {
+    var box = $('slot-box');
+    var badge = $('slot-mode-badge');
+    var hint = $('slot-speed-hint');
+    var subHint = $('slot-sub-hint');
+    if (!box) return;
+
+    box.classList.toggle('slot-modern', state.settings.reelStyle === 'modern');
+
+    if (state.settings.slotEnabled === false) {
+      box.classList.add('slot-off');
+      if (badge) badge.textContent = '⚡ スロットOFF（高速モード）';
+      if (hint) hint.textContent = '自動高速打刻';
+      if (!state.isSlotSpinning && !state.isSubmittingScan) {
+        $('reel-0').textContent = '⚡';
+        $('reel-1').textContent = '✅';
+        $('reel-2').textContent = '⚡';
+        if (subHint) subHint.textContent = 'スロット演出なしで最速記録します';
+      }
+    } else {
+      box.classList.remove('slot-off');
+      var isFair = state.settings.slotMode === 'fair';
+      if (badge) badge.textContent = isFair ? '🎰 満遍なく当選モード' : '🎰 通常モード';
+      if (hint) hint.textContent = '回転中タップで即停止';
+      if (subHint) {
+        var delaySec = (Number(state.settings.slotDelayMs || 0) / 1000).toFixed(1);
+        var coolSec = (Number(state.settings.slotCooldownMs || 1000) / 1000).toFixed(1);
+        subHint.textContent = '演出ディレイ ' + delaySec + '秒 ／ 結果ロック ' + coolSec + '秒';
       }
     }
-  });
+  }
 
-  inp.addEventListener('input', function() {
-    if (isAlertLocked) {
-      clearTimeout(scanTimer);
-      inp.value = '';
-      inp.blur();
-      notifyLockedScanAttempt();
+  function renderLatestCard() {
+    var card = $('latest-card');
+    var nameEl = $('latest-name');
+    var notifEl = $('latest-notif');
+    var slotEl = $('latest-slot-tag');
+    var rowBadge = $('latest-row-badge');
+    var doneBtn = $('latest-done-btn');
+    if (!card) return;
+
+    var activeRows = state.rows.filter(function (r) { return r.a !== '取消'; });
+    var latest = activeRows.length > 0 ? activeRows[activeRows.length - 1] : null;
+
+    card.classList.remove('has-notif', 'has-alert');
+    nameEl.classList.remove('is-red');
+    notifEl.classList.remove('is-alert');
+
+    if (!latest) {
+      nameEl.textContent = 'まだ打刻はありません';
+      notifEl.textContent = '';
+      slotEl.textContent = '';
+      rowBadge.textContent = '';
+      doneBtn.style.display = 'none';
+      doneBtn.dataset.rowNum = '';
       return;
     }
-    if (isSubmittingScan || isSlotInputLocked) {
-      clearTimeout(scanTimer);
-      inp.value = '';
+
+    rowBadge.textContent = '#' + (activeRows.length) + '（' + latest.rowNum + '行目）';
+    nameEl.textContent = latest.d || latest.e || '(不明)';
+    if (latest.isRed) nameEl.classList.add('is-red');
+
+    if (latest.c) {
+      notifEl.textContent = '🎁 ' + latest.c;
+      var isAlert = latest.c.indexOf('🚨') !== -1;
+      if (isAlert) {
+        card.classList.add('has-alert');
+        notifEl.classList.add('is-alert');
+      } else {
+        card.classList.add('has-notif');
+      }
+      doneBtn.style.display = 'inline-block';
+      doneBtn.dataset.rowNum = String(latest.rowNum);
+      var isDone = latest.b === '確';
+      doneBtn.textContent = isDone ? '確' : '未';
+      doneBtn.classList.toggle('is-done', isDone);
+    } else {
+      notifEl.textContent = '';
+      doneBtn.style.display = 'none';
+      doneBtn.dataset.rowNum = '';
+    }
+
+    slotEl.textContent = latest.h ? ('スロット：' + latest.h) : '';
+  }
+
+  function renderLogTable() {
+    var tbody = $('log-tbody');
+    var countBadge = $('total-count-badge');
+    var fgBadge = $('fg-count-badge');
+    if (!tbody) return;
+
+    var validCount = state.rows.filter(function (r) { return r.a !== '取消' && r.d; }).length;
+    if (countBadge) countBadge.textContent = '打刻: ' + validCount + '件';
+
+    var fLabel = state.settings.fLabel || '色違';
+    var gLabel = state.settings.gLabel || 'Evnt';
+    if (fgBadge) {
+      fgBadge.textContent = fLabel + ': ' + state.fList.length + ' ／ ' + gLabel + ': ' + state.gList.length;
+    }
+
+    if (state.rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#64748b; padding:18px;">本日の打刻はまだありません</td></tr>';
       return;
     }
-    if (isManualKb) return;
-    clearTimeout(scanTimer);
-    const val = inp.value || '';
-    if (!val.trim()) return;
 
-    const hasUrlComplete = /pokemon-go\.onelink\.me.*DlId=\d{12}/i.test(val);
-    const hasAtId = /[@＠][^\s]{2,}/.test(val);
-    const is12Digits = /^\s*\d[\d\s]{10,}\d\s*$/.test(val) && val.replace(/\s+/g, '').length === 12;
-    const isMemberCode = /^[A-Za-z]{1,3}\d{3,6}$/.test(val.trim());
+    var statusOpts = [
+      { v: '', label: '--選択--' },
+      { v: fLabel, label: fLabel },
+      { v: gLabel, label: gLabel },
+      { v: fLabel + '+' + gLabel, label: fLabel + '+' + gLabel },
+      { v: '取消', label: '取消' }
+    ];
 
-    if (hasUrlComplete || hasAtId) {
-      scanTimer = setTimeout(() => submitScan(inp.value), 250);
-    } else if (is12Digits) {
-      scanTimer = setTimeout(() => submitScan(inp.value), 300);
-    } else if (isMemberCode) {
-      scanTimer = setTimeout(() => submitScan(inp.value), 400);
-    } else if (val.length >= 16) {
-      scanTimer = setTimeout(() => submitScan(inp.value), 900);
+    // 新しい打刻が上に来るよう逆順表示
+    var reversed = state.rows.slice().reverse();
+    var html = reversed.map(function (r, idx) {
+      var dispNo = state.rows.length - idx;
+      var isCancelled = r.a === '取消';
+      var isAlert = !isCancelled && r.c && r.c.indexOf('🚨') !== -1 && r.b !== '確';
+
+      var optHtml = statusOpts.map(function (o) {
+        var sel = (r.a === o.v) ? ' selected' : '';
+        return '<option value="' + escapeHtml(o.v) + '"' + sel + '>' + escapeHtml(o.label) + '</option>';
+      }).join('');
+      if (r.a && !statusOpts.some(function (o) { return o.v === r.a; })) {
+        optHtml += '<option value="' + escapeHtml(r.a) + '" selected>' + escapeHtml(r.a) + '</option>';
+      }
+
+      var bHtml = '';
+      if (r.c && !isCancelled) {
+        var doneCls = r.b === '確' ? ' is-done' : '';
+        bHtml = '<button type="button" class="done-mini-btn' + doneCls + '" onclick="handleToggleRowDone(' + r.rowNum + ')">' + escapeHtml(r.b || '未') + '</button>';
+      }
+
+      var notifCls = (r.c && r.c.indexOf('🚨') !== -1) ? 'cell-notif is-alert' : 'cell-notif';
+      var nameCls = r.isRed ? 'cell-name is-red' : 'cell-name';
+
+      return (
+        '<tr class="' + (isCancelled ? 'row-cancelled' : (isAlert ? 'row-alert' : '')) + '">' +
+          '<td>' + dispNo + '</td>' +
+          '<td><select class="status-select" onchange="handleRowStatusChange(' + r.rowNum + ', this.value)">' + optHtml + '</select></td>' +
+          '<td>' + bHtml + '</td>' +
+          '<td class="' + notifCls + '">' + escapeHtml(r.c || '') + '</td>' +
+          '<td class="' + nameCls + '">' + escapeHtml(r.d || r.e || '') + '</td>' +
+          '<td class="cell-slot">' + escapeHtml(r.h || '') + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    tbody.innerHTML = html;
+  }
+
+  function renderSettingsPageDynamic() {
+    var quickBtn = $('quick-slot-toggle-btn');
+    if (quickBtn) {
+      var on = state.settings.slotEnabled !== false;
+      quickBtn.innerHTML = '<span>🎰 スロット機能：' + (on ? 'ON（抽選あり）' : 'OFF（自動高速）') + '</span><span style="font-size:0.76rem;">タップで切替</span>';
+      quickBtn.className = 'action-btn ' + (on ? 'primary' : 'success');
     }
-  });
-}
 
-function submitScanManual() {
-  if (isAlertLocked) {
-    notifyLockedScanAttempt();
-    return;
-  }
-  const inp = document.getElementById('scan-input');
-  submitScan(inp.value);
-}
+    var grid = $('dest-links-grid');
+    if (grid) {
+      var urls = state.destUrls || {};
+      var items = [
+        { label: 'D列(参加)シート', url: urls.d },
+        { label: 'F列(' + (state.settings.fLabel || '色違') + ')シート', url: urls.f },
+        { label: 'G列(' + (state.settings.gLabel || 'Evnt') + ')シート', url: urls.g },
+        { label: '🏆 当選者シート', url: urls.winner }
+      ];
+      grid.innerHTML = items.map(function (it) {
+        if (!it.url) {
+          return '<span class="dest-link-btn" style="opacity:0.45; cursor:default;">' + escapeHtml(it.label) + '</span>';
+        }
+        return '<a class="dest-link-btn" href="' + escapeHtml(it.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(it.label) + ' ↗</a>';
+      }).join('');
+    }
 
-// =========================================================================
-// 🚨 ロック発動・解除制御（物理スキャナー・カメラQR・NFCすべて連動ロック）
-// =========================================================================
-function engageAlertLock() {
-  isAlertFlashing = true;
-  isAlertLocked = true;
-  alertTapCount = 0;
-  alertFirstTapTime = 0;
-  clearTimeout(scanTimer);
-
-  const scanBox = document.getElementById('scan-box');
-  const inp = document.getElementById('scan-input');
-  const kbBtn = document.getElementById('kb-toggle');
-  const sendBtn = document.getElementById('send-btn');
-
-  if (scanBox) scanBox.classList.add('alert-locked');
-  if (inp) {
-    inp.value = '';
-    inp.readOnly = true;
-    inp.disabled = true;
-    inp.placeholder = '🔒 🚨重要通知の確認待ち（下の枠を2回タップで解除）';
-    inp.blur();
-  }
-  if (kbBtn) kbBtn.disabled = true;
-  if (sendBtn) sendBtn.disabled = true;
-  if (typeof setDeviceToolsLocked === 'function') setDeviceToolsLocked(true);
-  if (typeof updateCameraStatusUi === 'function') updateCameraStatusUi();
-
-  if (document.activeElement && typeof document.activeElement.blur === 'function') {
-    document.activeElement.blur();
-  }
-}
-
-function clearAlertFlashState() {
-  isAlertFlashing = false;
-  isAlertLocked = false;
-  alertTapCount = 0;
-  alertFirstTapTime = 0;
-  clearTimeout(alertSoundTimer);
-
-  const card = document.getElementById('recent-card');
-  if (card) card.classList.remove('alert-flash');
-
-  const scanBox = document.getElementById('scan-box');
-  const inp = document.getElementById('scan-input');
-  const kbBtn = document.getElementById('kb-toggle');
-  const sendBtn = document.getElementById('send-btn');
-
-  if (scanBox) scanBox.classList.remove('alert-locked');
-  if (inp) {
-    inp.disabled = false;
-    inp.readOnly = false;
-    inp.value = '';
-    inp.setAttribute('inputmode', isManualKb ? 'text' : 'none');
-    inp.placeholder = isManualKb ? '手動入力モード（Enterか送信を押す）' : 'スキャナー待機中（QR読取 / 会員番号）';
-  }
-  if (kbBtn) kbBtn.disabled = false;
-  if (sendBtn) sendBtn.disabled = false;
-  if (typeof setDeviceToolsLocked === 'function') setDeviceToolsLocked(false);
-  syncAllInputLockStates();
-}
-
-function handleAlertCardTap() {
-  if (!isAlertFlashing && !isAlertLocked) return;
-  getAudioCtx();
-  const now = Date.now();
-  const hintEl = document.getElementById('alert-tap-hint');
-
-  if (alertTapCount === 0) {
-    alertTapCount = 1;
-    alertFirstTapTime = now;
-    hintEl.innerText = '✅ 1回目確認！0.5秒以上あけてもう一度タップで解除';
-    return;
+    var cCard = $('custom-links-card');
+    var cList = $('custom-links-list');
+    var validLinks = (state.settings.customLinks || []).filter(function (lk) { return lk && lk.name && lk.url; });
+    if (cCard && cList) {
+      if (validLinks.length === 0) {
+        cCard.style.display = 'none';
+      } else {
+        cCard.style.display = 'block';
+        cList.innerHTML = validLinks.map(function (lk) {
+          return '<a class="action-btn" href="' + escapeHtml(lk.url) + '" target="_blank" rel="noopener noreferrer"><span>🔗 ' + escapeHtml(lk.name) + '</span><span>↗</span></a>';
+        }).join('');
+      }
+    }
   }
 
-  const elapsed = now - alertFirstTapTime;
-  if (elapsed < 500) {
-    hintEl.innerText = '⚠️ 速すぎます！0.5秒以上あけてもう一度タップしてください';
-    return;
+  // -----------------------------------------------------------------------
+  // スロット演出 ＆ 打刻処理
+  // -----------------------------------------------------------------------
+  function clearSlotTimers() {
+    if (state.spinIntervalId) {
+      clearInterval(state.spinIntervalId);
+      state.spinIntervalId = null;
+    }
+    state.pendingStopTimers.forEach(function (id) { clearTimeout(id); });
+    state.pendingStopTimers = [];
   }
 
-  clearAlertFlashState();
-  showToast('✅ 🚨重要通知を確認・ロック解除しました');
-  focusScanInput();
-  setTimeout(() => focusScanInput(), 50);
-}
+  function startSlotSpinningVisual() {
+    clearSlotTimers();
+    state.isSlotSpinning = true;
+    var box = $('slot-box');
+    box.classList.remove('slot-win', 'slot-jackpot', 'slot-dup');
+    $('slot-msg').textContent = '🎰 抽選中…（タップで即停止）';
 
-// =========================================================================
-// 打刻送信（スロットON時は一括ロック／スロットOFF時は高速連続受付）
-// =========================================================================
-function submitScan(rawVal) {
-  clearTimeout(scanTimer);
-  const inp = document.getElementById('scan-input');
+    for (var i = 0; i < 3; i++) {
+      var r = $('reel-' + i);
+      if (r) r.classList.add('spinning');
+    }
 
-  if (typeof getGasApiUrl === 'function' && !getGasApiUrl()) {
-    if (inp) inp.value = '';
-    showToast('🔌 先にGAS接続先URLを設定してください');
-    if (typeof openGasUrlModal === 'function') openGasUrlModal();
-    return;
+    playSoundPreset('spin');
+    var tick = 0;
+    state.spinIntervalId = setInterval(function () {
+      tick++;
+      for (var i = 0; i < 3; i++) {
+        var r = $('reel-' + i);
+        if (r && r.classList.contains('spinning')) {
+          r.textContent = SLOT_SYMBOLS[(tick + i * 2) % SLOT_SYMBOLS.length];
+        }
+      }
+    }, 65);
   }
 
-  if (isAlertLocked) {
-    if (inp) { inp.value = ''; inp.blur(); }
-    notifyLockedScanAttempt();
-    return;
+  function buildTargetReels(slotResult) {
+    if (!slotResult) return ['❓', '❓', '❓'];
+    if (slotResult.isDuplicate) {
+      if (slotResult.penaltyMode === 'skull') return ['💀', '💀', '💀'];
+      var p = PENALTY_SYMBOLS[Math.floor(Math.random() * PENALTY_SYMBOLS.length)];
+      return [p, p, p];
+    }
+    if (slotResult.slotDisabled) {
+      return ['⚡', '✅', '⚡'];
+    }
+    if (slotResult.won && slotResult.symbol) {
+      return [slotResult.symbol, slotResult.symbol, slotResult.symbol];
+    }
+    // ハズレ（3つ揃わない組み合わせを生成）
+    var a = SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    var b = SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    var c = SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    if (a === b && b === c) {
+      c = SLOT_SYMBOLS[(SLOT_SYMBOLS.indexOf(c) + 1) % SLOT_SYMBOLS.length];
+    }
+    return [a, b, c];
   }
 
-  if (isSubmittingScan || isSlotInputLocked) {
-    if (inp) inp.value = '';
-    showToast('⏳ 前の打刻・演出中です。完了までお待ちください');
-    return;
+  function finishSlotVisual(scanRes, immediate) {
+    clearSlotTimers();
+    var slotResult = (scanRes && scanRes.slotResult) || {};
+    var targets = buildTargetReels(slotResult);
+    var box = $('slot-box');
+    var msgEl = $('slot-msg');
+
+    function finalizeDisplay(usedQuickStop) {
+      for (var i = 0; i < 3; i++) {
+        var r = $('reel-' + i);
+        if (r) {
+          r.classList.remove('spinning');
+          r.textContent = targets[i];
+        }
+      }
+      state.isSlotSpinning = false;
+      state.pendingScanResponse = null;
+
+      if (scanRes.isDuplicate) {
+        box.classList.add('slot-dup');
+        msgEl.textContent = '⚠️ 重複打刻：' + (scanRes.formattedName || '');
+        playSoundPreset('buzzer');
+      } else if (slotResult.slotDisabled) {
+        msgEl.textContent = '⚡ 打刻完了：' + (scanRes.formattedName || '');
+        playSoundPreset('ok');
+      } else if (slotResult.won) {
+        box.classList.add(slotResult.isJackpot ? 'slot-jackpot' : 'slot-win');
+        msgEl.textContent = (slotResult.logText || '🎉 当たり！') + '（' + (scanRes.formattedName || '') + '）';
+        playSoundPreset(slotResult.isJackpot ? 'fanfare' : 'win');
+      } else {
+        msgEl.textContent = '✅ 打刻完了：' + (scanRes.formattedName || '');
+        playSoundPreset('ok');
+      }
+
+      if (scanRes.dashboard) {
+        applyDashboardData(scanRes.dashboard);
+      }
+
+      // 結果表示後の入力ロック時間（設定値：0.3〜5.0秒 / 即停止タップ時は最大0.45秒）
+      var configuredMs = clampNum(state.settings.slotCooldownMs, 300, 5000, 1000);
+      var lockMs = usedQuickStop ? Math.min(450, configuredMs) : configuredMs;
+      if (slotResult.slotDisabled) {
+        lockMs = Math.min(500, configuredMs);
+      }
+
+      state.isCooldown = true;
+      updateScanControlsLock();
+      if (state.cooldownTimerId) clearTimeout(state.cooldownTimerId);
+      state.cooldownTimerId = setTimeout(function () {
+        state.isCooldown = false;
+        updateScanControlsLock();
+        focusScanInputSafe();
+      }, lockMs);
+    }
+
+    if (immediate || slotResult.slotDisabled || scanRes.isDuplicate) {
+      finalizeDisplay(!!immediate);
+      return;
+    }
+
+    var delayMs = clampNum(state.settings.slotDelayMs, 0, 5000, 0);
+    // 左→中→右の順に停止（演出ディレイ後に0ms / 220ms / 460ms）
+    var offsets = [delayMs, delayMs + 220, delayMs + 460];
+
+    // 回転を継続しながら順番に止める
+    var tick = 0;
+    state.spinIntervalId = setInterval(function () {
+      tick++;
+      for (var i = 0; i < 3; i++) {
+        var r = $('reel-' + i);
+        if (r && r.classList.contains('spinning')) {
+          r.textContent = SLOT_SYMBOLS[(tick + i * 2) % SLOT_SYMBOLS.length];
+        }
+      }
+    }, 65);
+
+    offsets.forEach(function (ms, idx) {
+      var tId = setTimeout(function () {
+        var r = $('reel-' + idx);
+        if (r) {
+          r.classList.remove('spinning');
+          r.textContent = targets[idx];
+        }
+        if (idx < 2) {
+          playSoundPreset('ok');
+        } else {
+          clearSlotTimers();
+          finalizeDisplay(false);
+        }
+      }, ms);
+      state.pendingStopTimers.push(tId);
+    });
   }
 
-  clearTimeout(alertSoundTimer);
-  const clean = String(rawVal || '').replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]/g, '').trim();
-  if (inp) inp.value = '';
-  if (!clean) return;
-
-  const now = Date.now();
-  if (clean === lastScanStr && (now - lastScanTime) < 2500) {
-    showToast('⚠️ 連続読み取りをブロックしました');
-    focusScanInput();
-    return;
-  }
-  lastScanStr = clean;
-  lastScanTime = now;
-
-  isSubmittingScan = true;
-  syncAllInputLockStates();
-
-  getAudioCtx();
-  pauseAutoRefreshTemporarily();
-
-  const slotEnabledNow = isSlotFeatureEnabled();
-  if (slotEnabledNow) {
-    startSlotSpin();
+  function handleSlotBoxTap() {
+    // スロット結果がすでに届いて演出待ち中なら即座に全リール停止
+    if (state.isSlotSpinning && state.pendingScanResponse) {
+      finishSlotVisual(state.pendingScanResponse, true);
+      showToast('⚡ 即停止しました', 1000);
+    }
   }
 
-  document.getElementById('recent-card').className = 'recent-card';
-  document.getElementById('recent-name').innerText = '照合中...';
-  document.getElementById('recent-name').className = 'recent-name';
-  document.getElementById('recent-notif').innerText = '';
+  async function processScan(rawText) {
+    var trimmed = String(rawText || '').trim();
+    if (!trimmed) return;
 
-  callGasApi('addScanData', [clean])
-    .then(function(res) {
-      isSubmittingScan = false;
+    if (!state.isConnected) {
+      showToast('🔌 先に接続先GAS URLを設定してください');
+      openGasUrlModal();
+      return;
+    }
+    if (state.hasUnconfirmedAlert) {
+      showToast('🚨 未確認のアラートを「確」にしてください');
+      playSoundPreset('buzzer');
+      return;
+    }
+    if (state.isSubmittingScan || state.isCooldown || state.isSlotSpinning) {
+      return;
+    }
 
+    ensureAudioCtx();
+    state.isSubmittingScan = true;
+    state.pendingScanResponse = null;
+    updateScanControlsLock();
+    pauseAutoPollByAction();
+
+    var useSlot = state.settings.slotEnabled !== false;
+    if (useSlot) {
+      startSlotSpinningVisual();
+    } else {
+      $('slot-msg').textContent = '⚡ 高速打刻中…';
+    }
+
+    try {
+      var res = await callGasApi('addScanData', [trimmed]);
       if (!res || res.ignored) {
-        if (slotEnabledNow) stopSlotImmediate(['🌸', '7', '🌸'], '待機中...');
-        syncAllInputLockStates();
-        focusScanInput();
+        clearSlotTimers();
+        state.isSlotSpinning = false;
+        $('slot-msg').textContent = 'QRコードを読み取ってください';
         return;
       }
       if (!res.ok) {
-        if (slotEnabledNow) stopSlotImmediate(['❌', '❌', '❌'], res.error || 'エラー');
-        playTone('error');
-        showToast('⚠️ ' + (res.error || '登録できませんでした'));
-        syncAllInputLockStates();
-        focusScanInput();
+        clearSlotTimers();
+        state.isSlotSpinning = false;
+        $('slot-msg').textContent = '⚠️ ' + (res.error || '無効なデータです');
+        playSoundPreset('buzzer');
+        showToast('⚠️ ' + (res.error || '無効なデータです'), 2800);
         return;
       }
 
-      const hasAlertNotif = !!(res.notif && String(res.notif).indexOf('🚨') !== -1);
-      updateRecentCard(res, hasAlertNotif);
-
-      if (res.dashboard) {
-        applyDashboard(res.dashboard);
+      state.pendingScanResponse = res;
+      if (useSlot) {
+        finishSlotVisual(res, false);
+      } else {
+        finishSlotVisual(res, true);
       }
+    } catch (err) {
+      clearSlotTimers();
+      state.isSlotSpinning = false;
+      $('slot-msg').textContent = '❌ 通信エラー（再読込してください）';
+      playSoundPreset('buzzer');
+      showToast('❌ 打刻エラー：' + err.message, 3200);
+    } finally {
+      state.isSubmittingScan = false;
+      updateScanControlsLock();
+    }
+  }
 
-      // スロットOFF（またはスロット無効レスポンス）の場合：即座に完了音を鳴らして次の受付へ
-      if (!isSlotFeatureEnabled() || (res.slotResult && res.slotResult.slotDisabled)) {
-        clearAllSlotTimers();
-        stopSpinSoundLoop();
-        isSpinning = false;
-        isSlotInputLocked = false;
-        syncAllInputLockStates();
+  function submitScanFromInput() {
+    var input = $('scan-input');
+    if (!input) return;
+    var val = input.value;
+    input.value = '';
+    processScan(val);
+  }
 
-        if (res.isDuplicate) {
-          playTone('buzzer');
-        } else {
-          playTone('ok');
-        }
+  // device.js（カメラQR・NFC）から呼び出す窓口
+  function handleExternalScan(text) {
+    if (isScanBlocked()) return false;
+    processScan(text);
+    return true;
+  }
 
-        if (hasAlertNotif) {
-          clearTimeout(alertSoundTimer);
-          alertSoundTimer = setTimeout(() => {
-            if (isAlertFlashing || isAlertLocked) playTone('alert');
-          }, 450);
-        } else if (!isAlertLocked) {
-          focusScanInput();
-        }
-        return;
-      }
+  // -----------------------------------------------------------------------
+  // A列ステータス変更・B列「未/確」トグル
+  // -----------------------------------------------------------------------
+  async function handleRowStatusChange(rowNum, newStatus) {
+    pauseAutoPollByAction();
+    try {
+      var dash = await callGasApi('updateRowStatus', [rowNum, newStatus]);
+      applyDashboardData(dash);
+      showToast('✅ 区分を更新しました', 1500);
+    } catch (err) {
+      showToast('❌ 更新失敗：' + err.message, 2800);
+    }
+  }
 
-      // スロットON時：演出中＋結果表示後2秒間すべての一括ロックを開始
-      isSlotInputLocked = true;
-      syncAllInputLockStates();
-      setupSequentialReelStop(res.slotResult, hasAlertNotif);
-    })
-    .catch(function(err) {
-      isSubmittingScan = false;
-      isSlotInputLocked = false;
-      if (slotEnabledNow) stopSlotImmediate(['⚠️', '⚠️', '⚠️'], '通信エラー');
-      playTone('error');
-      syncAllInputLockStates();
-      alert('通信エラー: ' + (err.message || err));
-      if (!isAlertLocked) focusScanInput();
+  async function handleToggleRowDone(rowNum) {
+    pauseAutoPollByAction();
+    try {
+      var dash = await callGasApi('toggleRowDone', [rowNum]);
+      applyDashboardData(dash);
+      showToast('✅ 確認状態を更新しました', 1500);
+    } catch (err) {
+      showToast('❌ 更新失敗：' + err.message, 2800);
+    }
+  }
+
+  function toggleLatestDone() {
+    var btn = $('latest-done-btn');
+    var rowNum = Number(btn && btn.dataset.rowNum);
+    if (rowNum > 0) handleToggleRowDone(rowNum);
+  }
+
+  // -----------------------------------------------------------------------
+  // 2ページ目：クイック切替・設定モーダル
+  // -----------------------------------------------------------------------
+  async function quickToggleSlotEnabled() {
+    var nextVal = !(state.settings.slotEnabled !== false);
+    pauseAutoPollByAction();
+    try {
+      var dash = await callGasApi('saveSettings', [{ slotEnabled: nextVal }]);
+      applyDashboardData(dash);
+      showToast(nextVal ? '🎰 スロット機能をONにしました' : '⚡ スロット機能をOFF（高速モード）にしました', 2200);
+    } catch (err) {
+      showToast('❌ 切替失敗：' + err.message, 2800);
+    }
+  }
+
+  function openSettingsModal() {
+    var s = state.settings;
+    $('set-highlight-color').value = s.highlightColor || '#fff9b1';
+    $('set-slot-enabled').value = s.slotEnabled === false ? 'false' : 'true';
+    $('set-slot-mode').value = s.slotMode || 'normal';
+    $('set-fair-limit').value = s.fairLimit != null ? s.fairLimit : 1;
+    $('set-jackpot-target').value = s.jackpotTarget || 'both';
+    $('set-penalty-mode').value = s.penaltyMode || 'random';
+    $('set-reel-style').value = s.reelStyle || 'legacy';
+
+    // 時間3項目（秒単位で表示）
+    $('set-slot-delay-sec').value = (clampNum(s.slotDelayMs, 0, 5000, 0) / 1000).toFixed(1);
+    $('set-slot-cooldown-sec').value = (clampNum(s.slotCooldownMs, 300, 5000, 1000) / 1000).toFixed(1);
+    $('set-pause-sec').value = clampNum(s.pauseSeconds, 5, 120, 15);
+
+    var np = s.normalProb || {};
+    var fp = s.fairProb || {};
+    $('prob-n-seven').value = np.seven || 0;
+    $('prob-n-sakura').value = np.sakura || 0;
+    $('prob-n-bar').value = np.bar || 0;
+    $('prob-n-bell').value = np.bell || 0;
+    $('prob-n-grape').value = np.grape || 0;
+    $('prob-n-cherry').value = np.cherry || 0;
+
+    $('prob-f-seven').value = fp.seven || 0;
+    $('prob-f-sakura').value = fp.sakura || 0;
+    $('prob-f-bar').value = fp.bar || 0;
+    $('prob-f-bell').value = fp.bell || 0;
+    $('prob-f-grape').value = fp.grape || 0;
+    $('prob-f-cherry').value = fp.cherry || 0;
+
+    $('set-f-label').value = s.fLabel || '色違';
+    $('set-g-label').value = s.gLabel || 'Evnt';
+
+    var snd = s.sounds || {};
+    $('snd-spin').value = snd.spin || 'basic';
+    $('snd-ok').value = snd.ok || 'basic';
+    $('snd-win').value = snd.win || 'basic';
+    $('snd-fanfare').value = snd.fanfare || 'basic';
+    $('snd-buzzer').value = snd.buzzer || 'basic';
+
+    var links = s.customLinks || [];
+    for (var i = 1; i <= 4; i++) {
+      var lk = links[i - 1] || {};
+      $('clink-name-' + i).value = lk.name || '';
+      $('clink-url-' + i).value = lk.url || '';
+    }
+
+    openModal('modal-settings');
+  }
+
+  async function saveSettingsFromModal() {
+    var delaySec = clampNum($('set-slot-delay-sec').value, 0, 5, 0);
+    var coolSec = clampNum($('set-slot-cooldown-sec').value, 0.3, 5, 1.0);
+    var pauseSec = Math.round(clampNum($('set-pause-sec').value, 5, 120, 15));
+
+    var payload = {
+      highlightColor: $('set-highlight-color').value,
+      slotEnabled: $('set-slot-enabled').value !== 'false',
+      slotMode: $('set-slot-mode').value,
+      fairLimit: Math.max(0, parseInt($('set-fair-limit').value, 10) || 0),
+      jackpotTarget: $('set-jackpot-target').value,
+      penaltyMode: $('set-penalty-mode').value,
+      reelStyle: $('set-reel-style').value,
+      slotDelayMs: Math.round(delaySec * 1000),
+      slotCooldownMs: Math.round(coolSec * 1000),
+      pauseSeconds: pauseSec,
+      normalProb: {
+        seven: parseFloat($('prob-n-seven').value) || 0,
+        sakura: parseFloat($('prob-n-sakura').value) || 0,
+        bar: parseFloat($('prob-n-bar').value) || 0,
+        bell: parseFloat($('prob-n-bell').value) || 0,
+        grape: parseFloat($('prob-n-grape').value) || 0,
+        cherry: parseFloat($('prob-n-cherry').value) || 0
+      },
+      fairProb: {
+        seven: parseFloat($('prob-f-seven').value) || 0,
+        sakura: parseFloat($('prob-f-sakura').value) || 0,
+        bar: parseFloat($('prob-f-bar').value) || 0,
+        bell: parseFloat($('prob-f-bell').value) || 0,
+        grape: parseFloat($('prob-f-grape').value) || 0,
+        cherry: parseFloat($('prob-f-cherry').value) || 0
+      },
+      fLabel: ($('set-f-label').value || '色違').trim(),
+      gLabel: ($('set-g-label').value || 'Evnt').trim(),
+      sounds: {
+        spin: $('snd-spin').value,
+        ok: $('snd-ok').value,
+        win: $('snd-win').value,
+        fanfare: $('snd-fanfare').value,
+        buzzer: $('snd-buzzer').value
+      },
+      customLinks: [1, 2, 3, 4].map(function (n) {
+        return {
+          slot: n,
+          name: ($('clink-name-' + n).value || '').trim(),
+          url: ($('clink-url-' + n).value || '').trim()
+        };
+      })
+    };
+
+    try {
+      showToast('💾 設定を保存中…');
+      var dash = await callGasApi('saveSettings', [payload]);
+      applyDashboardData(dash);
+      closeModal('modal-settings');
+      showToast('✅ 設定を保存＆キャッシュ更新しました！');
+    } catch (err) {
+      showToast('❌ 保存エラー：' + err.message, 3200);
+    }
+  }
+
+  async function runResetSlotHistory() {
+    if (!confirm('満遍なく当選モードの「スロット履歴」をすべて消去しますか？')) return;
+    try {
+      var res = await callGasApi('resetSlotHistory', []);
+      showToast('✅ ' + (res && res.message ? res.message : 'リセットしました'));
+    } catch (err) {
+      showToast('❌ エラー：' + err.message, 3000);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // スロット履歴モーダル（閲覧専用）
+  // -----------------------------------------------------------------------
+  async function openSlotHistoryModal() {
+    openModal('modal-slot-history');
+    $('slot-hist-tbody').innerHTML = '<tr><td colspan="3" style="text-align:center; padding:16px;">読み込み中…</td></tr>';
+    try {
+      var data = await callGasApi('getSlotHistory', []);
+      state.slotHistoryCache = data;
+      renderSlotHistoryTable();
+    } catch (err) {
+      $('slot-hist-tbody').innerHTML = '<tr><td colspan="3" style="text-align:center; color:#dc2626; padding:16px;">取得エラー：' + escapeHtml(err.message) + '</td></tr>';
+    }
+  }
+
+  function setSlotHistorySort(mode) {
+    state.slotHistorySort = mode;
+    ['order', 'wins', 'name'].forEach(function (m) {
+      var btn = $('sort-hist-' + m);
+      if (btn) btn.classList.toggle('active', m === mode);
     });
-}
-
-function updateRecentCard(res, hasAlertNotif) {
-  const card = document.getElementById('recent-card');
-  const nameEl = document.getElementById('recent-name');
-  const notifEl = document.getElementById('recent-notif');
-  const hintEl = document.getElementById('alert-tap-hint');
-
-  nameEl.innerText = res.formattedName || '';
-  nameEl.className = 'recent-name' + (res.isFound ? '' : ' red');
-
-  if (res.isDuplicate) {
-    card.className = 'recent-card dup';
-    notifEl.innerText = '⚠️重複（再来場）';
-    return;
+    renderSlotHistoryTable();
   }
 
-  if (hasAlertNotif) {
-    card.className = 'recent-card unreg alert-flash';
-    notifEl.innerText = res.notif;
-    hintEl.innerText = '🔒 🚨確認後、枠を0.5秒以上あけて2回タップでロック解除';
-    engageAlertLock();
-    return;
-  }
+  function renderSlotHistoryTable() {
+    var data = state.slotHistoryCache;
+    if (!data) return;
+    var items = (data.items || []).slice();
+    var limit = Number(data.fairLimit) || 0;
 
-  if (res.notif) {
-    card.className = 'recent-card win';
-    notifEl.innerText = res.notif;
-  } else {
-    card.className = 'recent-card';
-    notifEl.innerText = '次回もお待ちしています✨';
-  }
-}
+    var totalWins = items.reduce(function (acc, it) { return acc + (it.wins || 0); }, 0);
+    var reachedCount = limit > 0 ? items.filter(function (it) { return it.wins >= limit; }).length : 0;
 
-// =========================================================================
-// スロット演出（3リール順番停止＋演出ディレイ＋即停止＋2秒クールダウン）
-// =========================================================================
-function clearAllSlotTimers() {
-  for (let i = 0; i < 3; i++) {
-    if (reelIntervals[i]) { clearInterval(reelIntervals[i]); reelIntervals[i] = null; }
-    if (stopTimers[i]) { clearTimeout(stopTimers[i]); stopTimers[i] = null; }
-  }
-  if (slotCooldownTimer) {
-    clearTimeout(slotCooldownTimer);
-    slotCooldownTimer = null;
-  }
-}
+    $('slot-hist-summary').innerHTML =
+      '<span class="summary-chip">対象者: ' + items.length + '名</span>' +
+      '<span class="summary-chip">累計当たり: ' + totalWins + '回</span>' +
+      (limit > 0 ? '<span class="summary-chip">上限(' + limit + '回)到達: ' + reachedCount + '名</span>' : '<span class="summary-chip">上限: 無制限</span>');
 
-function buildTargetSymbolsForSlot(slot) {
-  if (!slot) return ['7', '🌸', 'BAR'];
-  if (slot.isDuplicate) {
-    const pool = (slot.penaltyMode === 'skull') ? ['💀'] : ['💀', '💩'];
-    const icon = pool[Math.floor(Math.random() * pool.length)];
-    return [icon, icon, icon];
-  }
-  if (slot.won) {
-    const tok = normalizeReelToken(slot.symbol || '7');
-    return [tok, tok, tok];
-  }
-  let a = REEL_POOL[Math.floor(Math.random() * REEL_POOL.length)];
-  let b = REEL_POOL[Math.floor(Math.random() * REEL_POOL.length)];
-  let c = REEL_POOL[Math.floor(Math.random() * REEL_POOL.length)];
-  if (a === b && b === c) {
-    c = REEL_POOL[(REEL_POOL.indexOf(c) + 1) % REEL_POOL.length];
-  }
-  return [a, b, c];
-}
-
-function getResultSoundDurationMs(type) {
-  const style = activeSounds[type] || 'basic';
-  if (type === 'fanfare') {
-    if (style === 'legacy') return 950;
-    if (style === 'funny') return 1100;
-    if (style === 'retro') return 1050;
-    if (style === 'casino') return 950;
-    return 1120;
-  }
-  if (type === 'win') {
-    if (style === 'legacy') return 950;
-    if (style === 'funny') return 700;
-    if (style === 'retro') return 650;
-    if (style === 'casino') return 580;
-    return 520;
-  }
-  if (type === 'buzzer') {
-    if (style === 'legacy') return 400;
-    if (style === 'retro') return 800;
-    if (style === 'casino') return 700;
-    return 640;
-  }
-  if (style === 'legacy') return 350;
-  if (style === 'retro') return 310;
-  if (style === 'funny') return 240;
-  return 200;
-}
-
-function startSpinSoundLoop(overrideStyle) {
-  stopSpinSoundLoop();
-  const style = overrideStyle || activeSounds.spin || 'basic';
-  const intervalMs = (style === 'legacy') ? 100 : (style === 'casino' ? 65 : (style === 'funny' ? 115 : 85));
-  spinTickStep = 0;
-  playTone('spin', style);
-  spinSoundTimer = setInterval(() => {
-    playTone('spin', style);
-  }, intervalMs);
-}
-
-function stopSpinSoundLoop() {
-  if (spinSoundTimer) {
-    clearInterval(spinSoundTimer);
-    spinSoundTimer = null;
-  }
-}
-
-function startSlotSpin() {
-  if (isAlertLocked) return;
-  clearAllSlotTimers();
-  stopSpinSoundLoop();
-  pendingSlotContext = null;
-  forceStopRequested = false;
-  slotFinalized = false;
-  isSpinning = true;
-
-  document.getElementById('slot-msg').innerText = '抽選中...（枠タップで即停止）';
-  startSpinSoundLoop();
-
-  for (let i = 0; i < 3; i++) {
-    reelIntervals[i] = setInterval(() => {
-      const sym = REEL_POOL[Math.floor(Math.random() * REEL_POOL.length)];
-      setReelCell(i, sym);
-    }, 70);
-  }
-}
-
-function setupSequentialReelStop(slot, hasAlertNotif) {
-  const targetSymbols = buildTargetSymbolsForSlot(slot);
-  pendingSlotContext = { slot: slot, hasAlertNotif: hasAlertNotif, targetSymbols: targetSymbols };
-  slotFinalized = false;
-
-  if (forceStopRequested) {
-    executeImmediateFinish();
-    return;
-  }
-
-  const delayMs = (state.settings && Number(state.settings.slotDelayMs) >= 0) ? Number(state.settings.slotDelayMs) : 0;
-
-  stopTimers[0] = setTimeout(() => { stopSingleReel(0); }, delayMs);
-  stopTimers[1] = setTimeout(() => { stopSingleReel(1); }, delayMs + 250);
-  stopTimers[2] = setTimeout(() => {
-    stopSingleReel(2);
-    finalizeSlotResult(2000); // 結果表示後 2秒間ロックを維持
-  }, delayMs + 500);
-}
-
-function stopSingleReel(idx) {
-  if (!isSpinning || !pendingSlotContext || slotFinalized) return;
-  if (reelIntervals[idx]) {
-    clearInterval(reelIntervals[idx]);
-    reelIntervals[idx] = null;
-  }
-  setReelCell(idx, pendingSlotContext.targetSymbols[idx]);
-  playTone('reelStop', activeSounds.ok || 'basic');
-}
-
-function executeImmediateFinish() {
-  if (!pendingSlotContext || slotFinalized) return;
-  clearAllSlotTimers();
-  stopSpinSoundLoop();
-  for (let i = 0; i < 3; i++) {
-    setReelCell(i, pendingSlotContext.targetSymbols[i]);
-  }
-  playTone('reelStop', activeSounds.ok || 'basic');
-  finalizeSlotResult(450); // 即停止時は0.45秒後にすぐ次の受付へ復帰
-}
-
-function forceStopSlot() {
-  getAudioCtx();
-  if (!isSpinning) {
-    if (!isAlertLocked) focusScanInput();
-    return;
-  }
-  if (pendingSlotContext) {
-    executeImmediateFinish();
-  } else {
-    forceStopRequested = true;
-    document.getElementById('slot-msg').innerText = '結果受信中（受信次第すぐ停止します）...';
-  }
-  if (!isAlertLocked) focusScanInput();
-}
-
-function stopSlotImmediate(icons, msg) {
-  clearAllSlotTimers();
-  stopSpinSoundLoop();
-  pendingSlotContext = null;
-  forceStopRequested = false;
-  slotFinalized = true;
-  isSpinning = false;
-  isSlotInputLocked = false;
-  renderAllReels(icons);
-  document.getElementById('slot-msg').innerText = msg;
-  syncAllInputLockStates();
-}
-
-function finalizeSlotResult(cooldownMs) {
-  if (slotFinalized) return;
-  slotFinalized = true;
-
-  const ctx = pendingSlotContext;
-  clearAllSlotTimers();
-  stopSpinSoundLoop();
-  pendingSlotContext = null;
-  forceStopRequested = false;
-  isSpinning = false;
-
-  if (!ctx || !ctx.slot) {
-    isSlotInputLocked = false;
-    syncAllInputLockStates();
-    return;
-  }
-  const slot = ctx.slot;
-  const hasAlertNotif = ctx.hasAlertNotif;
-
-  let playedType = 'ok';
-  if (slot.isDuplicate) {
-    document.getElementById('slot-msg').innerText = '⚠️ 重複スキャンです！';
-    playedType = 'buzzer';
-    playTone('buzzer');
-  } else if (slot.won) {
-    document.getElementById('slot-msg').innerText = slot.logText || '🎉 当たり！';
-    if (slot.isJackpot) {
-      playedType = 'fanfare';
-      playTone('fanfare');
-      launchConfetti();
+    if (state.slotHistorySort === 'wins') {
+      items.sort(function (a, b) { return (b.wins - a.wins) || (a.order - b.order); });
+    } else if (state.slotHistorySort === 'name') {
+      items.sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'ja'); });
     } else {
-      playedType = 'win';
-      playTone('win');
-    }
-  } else {
-    document.getElementById('slot-msg').innerText = 'ご参加ありがとうございます✨';
-    playedType = 'ok';
-    playTone('ok');
-  }
-
-  if (hasAlertNotif) {
-    clearTimeout(alertSoundTimer);
-    const waitMs = getResultSoundDurationMs(playedType) + 500;
-    alertSoundTimer = setTimeout(() => {
-      if (isAlertFlashing || isAlertLocked) {
-        playTone('alert');
-      }
-    }, waitMs);
-  }
-
-  // 結果表示後2秒間（即停止時は0.45秒）の一括ロック解除タイマー
-  const lockWait = (typeof cooldownMs === 'number' && cooldownMs >= 0) ? cooldownMs : 2000;
-  isSlotInputLocked = true;
-  syncAllInputLockStates();
-
-  slotCooldownTimer = setTimeout(() => {
-    slotCooldownTimer = null;
-    isSlotInputLocked = false;
-    syncAllInputLockStates();
-    if (!isAlertLocked) focusScanInput();
-  }, lockWait);
-}
-
-function toggleMute() {
-  isMuted = !isMuted;
-  if (isMuted) stopSpinSoundLoop();
-  document.getElementById('mute-btn').innerText = isMuted ? '🔇 消音' : '🔊 音ON';
-  if (!isAlertLocked) setTimeout(() => focusScanInput(), 30);
-}
-
-function applySoundPreset(presetStyle) {
-  ['spin', 'ok', 'win', 'fanfare', 'buzzer'].forEach(k => {
-    const sel = document.getElementById('snd-' + k);
-    if (sel) sel.value = presetStyle;
-  });
-  const label = (presetStyle === 'legacy') ? '🕰️ 旧バージョンプリセット' : '🎵 ベーシック';
-  showToast(label + ' を全項目にセットしました（「設定を保存」で確定）');
-}
-
-function previewSoundRow(type) {
-  if (isMuted) {
-    showToast('🔇 現在「消音」です。メイン画面で「音ON」にしてください');
-    return;
-  }
-  const sel = document.getElementById('snd-' + type);
-  const chosenStyle = sel ? sel.value : 'basic';
-  clearTimeout(testSpinTimeout);
-  stopSpinSoundLoop();
-
-  if (type === 'spin') {
-    startSpinSoundLoop(chosenStyle);
-    testSpinTimeout = setTimeout(() => { stopSpinSoundLoop(); }, 1000);
-  } else if (type === 'ok' && chosenStyle === 'legacy') {
-    playTone('reelStop', 'legacy');
-    setTimeout(() => { playTone('ok', 'legacy'); }, 160);
-  } else {
-    playTone(type, chosenStyle);
-  }
-}
-
-function playTone(type, overrideStyle) {
-  if (isMuted) return;
-  try {
-    const ctx = getAudioCtx();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-    const style = overrideStyle || activeSounds[type] || 'basic';
-
-    function beep(freq, start, dur, wave, vol, endGain) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = wave || 'sine';
-      osc.frequency.setValueAtTime(freq, start);
-      const v = (vol !== undefined) ? vol : 0.18;
-      const eg = (endGain !== undefined) ? endGain : 0.001;
-      gain.gain.setValueAtTime(v, start);
-      gain.gain.exponentialRampToValueAtTime(eg, start + dur);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + dur);
+      items.sort(function (a, b) { return a.order - b.order; });
     }
 
-    function slide(fStart, fEnd, start, dur, wave, vol) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = wave || 'sine';
-      osc.frequency.setValueAtTime(fStart, start);
-      osc.frequency.exponentialRampToValueAtTime(Math.max(fEnd, 20), start + dur);
-      const v = (vol !== undefined) ? vol : 0.18;
-      gain.gain.setValueAtTime(v, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + dur);
-    }
-
-    function boing(baseFreq, start, dur, vol) {
-      const osc = ctx.createOscillator();
-      const lfo = ctx.createOscillator();
-      const lfoGain = ctx.createGain();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(baseFreq, start);
-      osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.45, start + dur);
-      lfo.frequency.setValueAtTime(18, start);
-      lfoGain.gain.setValueAtTime(baseFreq * 0.28, start);
-      lfo.connect(lfoGain);
-      lfoGain.connect(osc.frequency);
-      gain.gain.setValueAtTime(vol || 0.22, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      lfo.start(start); osc.start(start);
-      lfo.stop(start + dur); osc.stop(start + dur);
-    }
-
-    if (type === 'alert') {
-      beep(1320, now, 0.09, 'square', 0.16);
-      beep(988, now + 0.10, 0.09, 'square', 0.16);
-      beep(1320, now + 0.24, 0.09, 'square', 0.16);
-      beep(988, now + 0.34, 0.12, 'square', 0.16);
+    if (items.length === 0) {
+      $('slot-hist-tbody').innerHTML = '<tr><td colspan="3" style="text-align:center; color:#64748b; padding:18px;">履歴はまだありません</td></tr>';
       return;
     }
 
-    if (type === 'reelStop') {
-      if (style === 'legacy') beep(300, now, 0.08, 'triangle', 0.30, 0.001);
-      else if (style === 'casino') slide(170, 70, now, 0.06, 'triangle', 0.22);
-      else if (style === 'retro') beep(740, now, 0.045, 'square', 0.10);
-      else if (style === 'funny') slide(280, 180, now, 0.06, 'triangle', 0.15);
-      else beep(340, now, 0.06, 'triangle', 0.18);
+    $('slot-hist-tbody').innerHTML = items.map(function (it) {
+      var mark = (limit > 0 && it.wins >= limit) ? ' 🔒' : '';
+      return (
+        '<tr>' +
+          '<td style="font-weight:700;">' + escapeHtml(it.name) + mark + '</td>' +
+          '<td style="font-weight:800; color:#1d4ed8;">' + escapeHtml(it.wins) + '回</td>' +
+          '<td style="font-size:0.74rem; color:#475569;">' + escapeHtml(it.lastAt) + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+  }
+
+  // -----------------------------------------------------------------------
+  // 締め作業（①BK・②ログ修正・③転記＆後BK・⑤当選者編集・⑥初期化）
+  // -----------------------------------------------------------------------
+  async function runPreBackup() {
+    if (!confirm('① 修正前バックアップ（前）をドライブへ保存しますか？')) return;
+    try {
+      showToast('💾 修正前BKを保存中…');
+      var res = await callGasApi('savePreBackup', []);
+      alert(res.message || '修正前BKを保存しました。');
+    } catch (err) {
+      alert('エラー：' + err.message);
+    }
+  }
+
+  function openLogEditModal() {
+    renderLogEditList();
+    openModal('modal-log-edit');
+  }
+
+  function renderLogEditList() {
+    var container = $('log-edit-list');
+    if (!container) return;
+    if (state.rows.length === 0) {
+      container.innerHTML = '<div class="sub-note">修正対象の打刻ログがありません。</div>';
       return;
     }
 
-    if (type === 'spin') {
-      if (style === 'legacy') {
-        beep(600, now, 0.04, 'square', 0.05, 0.0001);
-      } else if (style === 'funny') {
-        const pops = [[260, 560], [340, 720], [220, 480], [390, 820]];
-        const p = pops[spinTickStep % pops.length];
-        spinTickStep++;
-        slide(p[0], p[1], now, 0.08, 'sine', 0.14);
-      } else if (style === 'retro') {
-        const notes = [523, 659, 784, 1046];
-        const f = notes[spinTickStep % notes.length];
-        spinTickStep++;
-        beep(f, now, 0.04, 'square', 0.08);
-      } else if (style === 'casino') {
-        const f = (spinTickStep % 2 === 0) ? 1250 : 950;
-        spinTickStep++;
-        slide(f, 260, now, 0.032, 'sawtooth', 0.09);
-      } else {
-        const notes = [587, 659, 784, 659];
-        const f = notes[spinTickStep % notes.length];
-        spinTickStep++;
-        beep(f, now, 0.045, 'triangle', 0.11);
-      }
-      return;
-    }
-
-    if (type === 'ok') {
-      if (style === 'legacy') {
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc1.type = 'sine'; osc2.type = 'sine';
-        osc1.frequency.setValueAtTime(880, now);
-        osc2.frequency.setValueAtTime(1760, now);
-        gain.gain.setValueAtTime(0.20, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-        osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination);
-        osc1.start(now); osc2.start(now);
-        osc1.stop(now + 0.35); osc2.stop(now + 0.35);
-      } else if (style === 'funny') {
-        slide(330, 145, now, 0.13, 'sawtooth', 0.15);
-        slide(190, 260, now + 0.12, 0.08, 'triangle', 0.12);
-      } else if (style === 'retro') {
-        beep(988, now, 0.07, 'square', 0.12);
-        beep(1319, now + 0.07, 0.22, 'square', 0.12);
-      } else if (style === 'casino') {
-        slide(160, 65, now, 0.07, 'triangle', 0.24);
-        slide(1700, 400, now, 0.035, 'square', 0.11);
-      } else {
-        beep(587, now, 0.06, 'sine', 0.15);
-        beep(880, now + 0.06, 0.11, 'sine', 0.17);
-      }
-      return;
-    }
-
-    if (type === 'win') {
-      if (style === 'legacy') {
-        const notes = [
-          { freq: 523.25, time: 0.00, dur: 0.15 },
-          { freq: 659.25, time: 0.15, dur: 0.15 },
-          { freq: 783.99, time: 0.30, dur: 0.15 },
-          { freq: 1046.50, time: 0.45, dur: 0.50 }
-        ];
-        notes.forEach(n => beep(n.freq, now + n.time, n.dur, 'triangle', 0.40, 0.01));
-      } else if (style === 'funny') {
-        beep(523, now, 0.08, 'sawtooth', 0.13);
-        beep(659, now + 0.09, 0.08, 'sawtooth', 0.13);
-        beep(784, now + 0.18, 0.16, 'sawtooth', 0.15);
-        boing(340, now + 0.34, 0.34, 0.22);
-      } else if (style === 'retro') {
-        [523, 659, 784, 1046, 784, 1046].forEach((f, idx) => {
-          beep(f, now + idx * 0.07, (idx === 5 ? 0.24 : 0.065), 'square', 0.12);
-        });
-      } else if (style === 'casino') {
-        slide(750, 2400, now, 0.16, 'sine', 0.22);
-        slide(900, 2600, now + 0.17, 0.18, 'sine', 0.22);
-        beep(2093, now + 0.36, 0.18, 'triangle', 0.18);
-      } else {
-        beep(659, now, 0.10, 'triangle', 0.20);
-        beep(784, now + 0.10, 0.10, 'triangle', 0.20);
-        beep(1046, now + 0.20, 0.28, 'triangle', 0.22);
-      }
-      return;
-    }
-
-    if (type === 'fanfare') {
-      if (style === 'legacy') {
-        const notes = [
-          { freq: 523.25, time: 0.00, dur: 0.15 },
-          { freq: 659.25, time: 0.15, dur: 0.15 },
-          { freq: 783.99, time: 0.30, dur: 0.15 },
-          { freq: 1046.50, time: 0.45, dur: 0.50 }
-        ];
-        notes.forEach(n => beep(n.freq, now + n.time, n.dur, 'triangle', 0.40, 0.01));
-      } else if (style === 'funny') {
-        beep(523, now, 0.08, 'sawtooth', 0.14);
-        beep(523, now + 0.09, 0.08, 'sawtooth', 0.14);
-        beep(659, now + 0.18, 0.09, 'sawtooth', 0.15);
-        beep(784, now + 0.28, 0.18, 'sawtooth', 0.16);
-        boing(280, now + 0.46, 0.28, 0.22);
-        boing(420, now + 0.72, 0.36, 0.24);
-      } else if (style === 'retro') {
-        const notes = [
-          [523, 0.00, 0.08], [659, 0.08, 0.08], [784, 0.16, 0.08],
-          [1046, 0.24, 0.14], [784, 0.39, 0.08], [880, 0.47, 0.08],
-          [988, 0.55, 0.08], [1046, 0.63, 0.38]
-        ];
-        notes.forEach(n => beep(n[0], now + n[1], n[2], 'square', 0.12));
-      } else if (style === 'casino') {
-        slide(700, 2500, now, 0.16, 'sine', 0.24);
-        slide(700, 2600, now + 0.17, 0.18, 'sine', 0.24);
-        for (let i = 0; i < 7; i++) {
-          const f = (i % 2 === 0) ? 2093 : 2637;
-          beep(f, now + 0.38 + i * 0.065, 0.09, 'triangle', 0.18);
-        }
-      } else {
-        beep(523, now, 0.11, 'triangle', 0.22);
-        beep(659, now + 0.11, 0.11, 'triangle', 0.22);
-        beep(784, now + 0.22, 0.11, 'triangle', 0.22);
-        beep(1046, now + 0.33, 0.18, 'triangle', 0.24);
-        beep(784, now + 0.52, 0.11, 'triangle', 0.22);
-        beep(1046, now + 0.64, 0.45, 'triangle', 0.25);
-      }
-      return;
-    }
-
-    if (type === 'buzzer') {
-      if (style === 'legacy') {
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc1.type = 'sawtooth'; osc2.type = 'sawtooth';
-        osc1.frequency.setValueAtTime(150, now);
-        osc2.frequency.setValueAtTime(156, now);
-        gain.gain.setValueAtTime(0.30, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.40);
-        osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination);
-        osc1.start(now); osc2.start(now);
-        osc1.stop(now + 0.40); osc2.stop(now + 0.40);
-      } else if (style === 'funny') {
-        const osc = ctx.createOscillator();
-        const lfo = ctx.createOscillator();
-        const lfoGain = ctx.createGain();
-        const gain = ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(145, now);
-        osc.frequency.exponentialRampToValueAtTime(62, now + 0.58);
-        lfo.frequency.setValueAtTime(28, now);
-        lfoGain.gain.setValueAtTime(26, now);
-        lfo.connect(lfoGain); lfoGain.connect(osc.frequency);
-        gain.gain.setValueAtTime(0.24, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.62);
-        osc.connect(gain); gain.connect(ctx.destination);
-        lfo.start(now); osc.start(now);
-        lfo.stop(now + 0.62); osc.stop(now + 0.62);
-      } else if (style === 'retro') {
-        [440, 415, 392, 349, 293].forEach((f, idx) => {
-          beep(f, now + idx * 0.11, (idx === 4 ? 0.35 : 0.10), 'square', 0.13);
-        });
-      } else if (style === 'casino') {
-        slide(620, 980, now, 0.16, 'sawtooth', 0.14);
-        slide(980, 620, now + 0.16, 0.16, 'sawtooth', 0.14);
-        slide(620, 980, now + 0.32, 0.16, 'sawtooth', 0.14);
-        slide(980, 520, now + 0.48, 0.20, 'sawtooth', 0.14);
-      } else {
-        beep(185, now, 0.20, 'sawtooth', 0.18);
-        beep(145, now + 0.22, 0.32, 'sawtooth', 0.18);
-      }
-      return;
-    }
-
-    beep(330, now, 0.10, 'square', 0.12);
-    beep(240, now + 0.12, 0.16, 'square', 0.12);
-  } catch (e) {}
-}
-
-function launchConfetti() {
-  const canvas = document.getElementById('confetti-canvas');
-  const ctx = canvas.getContext('2d');
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  const pieces = [];
-  const colors = ['#f43f5e', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#facc15'];
-  for (let i = 0; i < 90; i++) {
-    pieces.push({
-      x: Math.random() * canvas.width,
-      y: -20 - Math.random() * 200,
-      w: 8 + Math.random() * 6,
-      h: 6 + Math.random() * 6,
-      vx: (Math.random() - 0.5) * 4,
-      vy: 3 + Math.random() * 5,
-      c: colors[i % colors.length]
-    });
+    var reversed = state.rows.slice().reverse();
+    container.innerHTML = reversed.map(function (r) {
+      return (
+        '<div class="form-section" style="margin-bottom:8px;">' +
+          '<div style="font-size:0.8rem; font-weight:800; margin-bottom:4px;">' +
+            '行' + r.rowNum + '：' + escapeHtml(r.d || '(未解決)') +
+            (r.c ? ' ／ <span style="color:#b45309;">' + escapeHtml(r.c) + '</span>' : '') +
+          '</div>' +
+          '<input type="text" id="edit-raw-' + r.rowNum + '" class="form-input" value="' + escapeHtml(r.e || '') + '" style="margin-bottom:6px;">' +
+          '<div style="display:flex; gap:6px; justify-content:flex-end;">' +
+            '<button type="button" class="btn primary" onclick="saveEditedLogRow(' + r.rowNum + ')">🔄 再照合して更新</button>' +
+            '<button type="button" class="btn danger" onclick="confirmDeleteLogRow(' + r.rowNum + ')">🗑️ 行削除</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
   }
-  let frames = 0;
-  function step() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    pieces.forEach(p => {
-      p.x += p.vx; p.y += p.vy;
-      ctx.fillStyle = p.c;
-      ctx.fillRect(p.x, p.y, p.w, p.h);
-    });
-    if (++frames < 95) requestAnimationFrame(step);
-    else ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-  step();
-}
 
-// =========================================================================
-// 自動更新・カウントダウン一時停止（自動復帰）・ダッシュボード描画
-// =========================================================================
-function startPolling() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(() => {
-    if (Date.now() < pauseUntil || window.isDropdownActive || isSubmittingScan || isSlotInputLocked) return;
-    if (typeof getGasApiUrl === 'function' && !getGasApiUrl()) return;
-    fetchDashboard(false);
-  }, 5000);
-}
-
-function updatePollButtonsUi() {
-  const remainMs = pauseUntil - Date.now();
-  const isPausedNow = remainMs > 0;
-  const remainSec = isPausedNow ? Math.ceil(remainMs / 1000) : 0;
-  const label = isPausedNow ? `⏸️ 一時停止 (${remainSec}秒)` : '🟢 自動更新中';
-
-  ['poll-btn-1', 'poll-btn-2'].forEach(id => {
-    const b = document.getElementById(id);
-    if (!b) return;
-    b.innerText = label;
-    b.className = 'poll-btn' + (isPausedNow ? ' paused' : '');
-  });
-}
-
-function clearAutoRefreshPause(shouldFetchNow) {
-  pauseUntil = 0;
-  if (pauseCountdownTimer) {
-    clearInterval(pauseCountdownTimer);
-    pauseCountdownTimer = null;
-  }
-  updatePollButtonsUi();
-
-  if (shouldFetchNow && !window.isDropdownActive && !isSubmittingScan && !isSlotInputLocked) {
-    if (typeof getGasApiUrl === 'function' && getGasApiUrl()) {
-      fetchDashboard(false);
+  async function saveEditedLogRow(rowNum) {
+    var input = $('edit-raw-' + rowNum);
+    if (!input) return;
+    try {
+      showToast('🔄 最新名簿で再照合中…');
+      var dash = await callGasApi('updateLogEntry', [rowNum, input.value]);
+      applyDashboardData(dash);
+      renderLogEditList();
+      showToast('✅ 更新しました！');
+    } catch (err) {
+      alert('更新エラー：' + err.message);
     }
   }
-}
 
-function pauseAutoRefreshTemporarily() {
-  const rawSec = (state.settings && Number(state.settings.pauseSeconds) > 0)
-    ? Number(state.settings.pauseSeconds)
-    : 15;
-  const sec = Math.max(1, Math.round(rawSec));
-  pauseUntil = Date.now() + sec * 1000;
-  updatePollButtonsUi();
-
-  if (pauseCountdownTimer) {
-    clearInterval(pauseCountdownTimer);
-    pauseCountdownTimer = null;
-  }
-
-  pauseCountdownTimer = setInterval(() => {
-    if (Date.now() >= pauseUntil) {
-      clearAutoRefreshPause(true);
-    } else {
-      updatePollButtonsUi();
-    }
-  }, 500);
-}
-
-function togglePolling() {
-  if (Date.now() < pauseUntil) {
-    // カウントダウン中に押した場合は即座に自動更新へ復帰＋最新データ取得
-    clearAutoRefreshPause(false);
-    fetchDashboard(true);
-  } else {
-    // 自動更新中に押した場合は設定秒数だけ一時停止（0秒で自動復帰）
-    pauseAutoRefreshTemporarily();
-  }
-  if (!isAlertLocked) setTimeout(() => focusScanInput(), 40);
-}
-
-function fetchDashboard(force) {
-  if (typeof getGasApiUrl === 'function' && !getGasApiUrl()) return;
-  const hashToSend = force ? '' : (state.hash || '');
-  callGasApi('getDashboardState', [hashToSend])
-    .then(function(res) {
-      if (!res || res.unchanged) return;
-      if (window.isDropdownActive) return;
-      applyDashboard(res);
-    })
-    .catch(function(err) {
-      if (force) {
-        showToast('⚠️ データ取得失敗: ' + (err.message || err));
-      }
-    });
-}
-
-function applyDashboard(data) {
-  const winY = window.scrollY;
-  const scanWrap = document.getElementById('scan-table-wrap');
-  const listWrap = document.getElementById('list-table-wrap');
-  const scanScrollTop = scanWrap ? scanWrap.scrollTop : 0;
-  const scanScrollLeft = scanWrap ? scanWrap.scrollLeft : 0;
-  const listScrollTop = listWrap ? listWrap.scrollTop : 0;
-  const listScrollLeft = listWrap ? listWrap.scrollLeft : 0;
-
-  state = data;
-
-  if (data.settings && data.settings.sounds) saveLocalSounds(data.settings.sounds);
-  if (data.settings && data.settings.reelStyle) saveLocalReelStyle(data.settings.reelStyle);
-
-  const hlColor = (data.settings && data.settings.highlightColor) ? data.settings.highlightColor : '#fff9b1';
-  if (typeof syncActiveAppMeta === 'function') {
-    syncActiveAppMeta(data.ssName || '', hlColor);
-  }
-
-  const dispName = (typeof getActiveAppDisplayName === 'function' && getActiveAppDisplayName())
-    ? getActiveAppDisplayName()
-    : (data.ssName || DEFAULT_APP_TITLE);
-  updateHeaderTitleUi(dispName);
-
-  // ホスト専用：確認済み背景色とヘッダー色を自動連動
-  applyHeaderColor(hlColor);
-
-  // スロットON/OFF表示＆モード表示を反映
-  renderSlotPowerState();
-
-  const activeCount = (data.rows || []).filter(r => r.a !== '取消').length;
-  document.getElementById('count-pill-1').innerText = '打刻: ' + activeCount + '件';
-  document.getElementById('count-pill-2').innerText = '打刻: ' + activeCount + '件';
-
-  renderTables();
-  renderDestLinks();
-  renderCustomLinks();
-
-  if (scanWrap) { scanWrap.scrollTop = scanScrollTop; scanWrap.scrollLeft = scanScrollLeft; }
-  if (listWrap) { listWrap.scrollTop = listScrollTop; listWrap.scrollLeft = listScrollLeft; }
-  window.scrollTo(0, winY);
-}
-
-function getStatusOptionsHtml(currentVal) {
-  const f = (state.settings && state.settings.fLabel) || '色違';
-  const g = (state.settings && state.settings.gLabel) || 'Evnt';
-  const opts = ['', f, g, f + '/' + g, '取消'];
-  return opts.map(v => {
-    const label = v === '' ? '--選択--' : v;
-    const sel = (v === currentVal) ? ' selected' : '';
-    return `<option value="${escapeHtml(v)}"${sel}>${escapeHtml(label)}</option>`;
-  }).join('');
-}
-
-// E列表示ヘルパー（URLならタップ可能な「Linkを開く」、通常文字はそのまま表示）
-function formatColECellHtml(rawE, truncatePlain) {
-  const str = String(rawE || '').trim();
-  if (/^https?:\/\//i.test(str)) {
-    const safeHref = escapeHtml(str);
-    return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; font-weight:800; text-decoration:underline;">Linkを開く</a>`;
-  }
-  const disp = (truncatePlain && str.length > 28) ? (str.substring(0, 28) + '…') : str;
-  return escapeHtml(disp);
-}
-
-function renderTables() {
-  const revRows = (state.rows || []).slice().reverse();
-  const hlColor = (state.settings && state.settings.highlightColor) ? state.settings.highlightColor : '#fff9b1';
-  let rowsHtml = '';
-
-  revRows.forEach(r => {
-    const trCls = (r.a === '取消') ? ' class="row-canceled"' : '';
-    const dCls = r.isRed ? ' class="td-red"' : '';
-    const hasNotif = !!(r.c && r.c.trim() !== '');
-    const nCls = 'td-notif' + ((r.c.indexOf('🚨') !== -1 || r.c.indexOf('⚠️') !== -1) ? ' alert' : '');
-    const stSelect = `<select class="st-sel" onfocus="window.isDropdownActive=true;" onblur="window.isDropdownActive=false; setTimeout(()=>{ if(!window.isDropdownActive && !isAlertLocked) focusScanInput(); }, 350);" onchange="window.isDropdownActive=false; onChangeStatus(${r.rowNum}, this.value)">${getStatusOptionsHtml(r.a)}</select>`;
-
-    let doneHtml = '';
-    if (hasNotif) {
-      const isConfirmed = (r.b === '確');
-      const doneStyle = isConfirmed ? ` style="background:${escapeHtml(hlColor)}; color:#0f172a; border-color:#64748b;"` : '';
-      doneHtml = `<button type="button" class="done-btn${isConfirmed ? ' ok' : ''}"${doneStyle} onclick="onToggleDone(${r.rowNum})">${escapeHtml(r.b || '未')}</button>`;
-    }
-
-    rowsHtml += `<tr${trCls}>
-      <td>${stSelect}</td>
-      <td style="text-align:center;">${doneHtml}</td>
-      <td class="${nCls}">${escapeHtml(r.c)}</td>
-      <td${dCls}>${escapeHtml(r.d)}</td>
-      <td class="td-stamping" title="${escapeHtml(r.e)}">${formatColECellHtml(r.e, true)}</td>
-      <td>${escapeHtml(r.f)}</td>
-      <td>${escapeHtml(r.g)}</td>
-      <td>${escapeHtml(r.h)}</td>
-    </tr>`;
-  });
-
-  document.getElementById('scan-tbody').innerHTML = rowsHtml;
-  document.getElementById('list-tbody').innerHTML = rowsHtml;
-}
-
-function renderDestLinks() {
-  const u = state.destUrls || {};
-  const setHref = (id, url) => {
-    const a = document.getElementById(id);
-    if (url) { a.href = url; a.style.opacity = '1'; a.onclick = null; }
-    else { a.href = '#'; a.style.opacity = '0.5'; a.onclick = () => { alert('転記先シートIDが未設定です。'); return false; }; }
-  };
-  setHref('link-dest-d', u.d);
-  setHref('link-dest-f', u.f);
-  setHref('link-dest-g', u.g);
-}
-
-function renderCustomLinks() {
-  const area = document.getElementById('custom-links-area');
-  const row = document.getElementById('custom-links-row');
-  const links = (state.settings && state.settings.customLinks) ? state.settings.customLinks : [];
-  const active = links.filter(l => l && l.url && l.url.trim() !== '');
-  if (active.length === 0) {
-    area.style.display = 'none';
-    return;
-  }
-  area.style.display = 'block';
-  row.style.gridTemplateColumns = `repeat(${active.length}, 1fr)`;
-  row.innerHTML = active.map((l, idx) => {
-    const title = l.name || ('リンク' + (idx + 1));
-    return `<a class="custom-link-btn" href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>`;
-  }).join('');
-}
-
-function onChangeStatus(rowNum, val) {
-  pauseAutoRefreshTemporarily();
-  showBusy('⏳ ステータス更新中...');
-  callGasApi('updateRowStatus', [rowNum, val])
-    .then(function(dash) {
-      hideBusy();
-      applyDashboard(dash);
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    })
-    .catch(function(err) {
-      hideBusy();
-      alert(err.message || err);
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    });
-}
-
-function onToggleDone(rowNum) {
-  pauseAutoRefreshTemporarily();
-  showBusy('⏳ 確認フラグ更新中...');
-  callGasApi('toggleRowDone', [rowNum])
-    .then(function(dash) {
-      hideBusy();
-      applyDashboard(dash);
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    })
-    .catch(function(err) {
-      hideBusy();
-      alert(err.message || err);
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    });
-}
-
-function copyColumnData(col) {
-  let list = [];
-  if (col === 'D') list = (state.rows || []).filter(r => r.a !== '取消' && r.d).map(r => r.d).reverse();
-  else if (col === 'E') list = (state.rows || []).filter(r => r.e).map(r => r.e).reverse();
-  else if (col === 'F') list = (state.fList || []).slice().reverse();
-  else if (col === 'G') list = (state.gList || []).slice().reverse();
-
-  if (list.length === 0) {
-    showToast(col + '列にコピー対象のデータがありません');
-    return;
-  }
-  const text = list.join('\n');
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => {
-      showToast('✅ ' + col + '列（' + list.length + '件）をコピーしました');
-    }).catch(() => fallbackCopyCol(text, col, list.length));
-  } else {
-    fallbackCopyCol(text, col, list.length);
-  }
-}
-
-function fallbackCopyCol(text, col, len) {
-  const ta = document.createElement('textarea');
-  ta.value = text; document.body.appendChild(ta); ta.select();
-  try { document.execCommand('copy'); } catch (e) {}
-  document.body.removeChild(ta);
-  showToast('✅ ' + col + '列（' + len + '件）をコピーしました');
-}
-
-// =========================================================================
-// モーダル1：全列参照 ＆ モーダル1-B：スロット履歴参照（閲覧専用） ＆ モーダル2：設定
-// =========================================================================
-function openFullLogModal() {
-  const rev = (state.rows || []).slice().reverse();
-  document.getElementById('full-tbody').innerHTML = rev.map(r => `<tr>
-    <td>${r.rowNum}</td><td>${escapeHtml(r.a)}</td><td>${escapeHtml(r.b)}</td>
-    <td class="td-notif${(r.c.indexOf('🚨') !== -1 || r.c.indexOf('⚠️') !== -1) ? ' alert' : ''}">${escapeHtml(r.c)}</td>
-    <td class="${r.isRed ? 'td-red' : ''}">${escapeHtml(r.d)}</td>
-    <td title="${escapeHtml(r.e)}">${formatColECellHtml(r.e, false)}</td><td>${escapeHtml(r.f)}</td><td>${escapeHtml(r.g)}</td><td>${escapeHtml(r.h)}</td>
-  </tr>`).join('');
-  openModal('modal-full');
-}
-
-function openSlotHistoryModal() {
-  slotHistorySortMode = 'wins'; // 初期表示は回数順
-  updateSlotHistorySortButtons();
-  document.getElementById('slot-hist-summary').innerText = '⏳ スロット履歴を読み込み中...';
-  document.getElementById('slot-hist-limit-note').innerText = '';
-  document.getElementById('slot-hist-tbody').innerHTML =
-    '<tr><td colspan="3" style="text-align:center; padding:18px; color:#64748b; font-weight:bold;">⏳ 読み込み中...</td></tr>';
-  openModal('modal-slot-history');
-
-  callGasApi('getSlotHistory', [])
-    .then(function(data) {
-      lastSlotHistoryData = data || { items: [], fairLimit: 0, slotMode: 'normal' };
-      renderSlotHistoryModal();
-    })
-    .catch(function(err) {
-      const msg = String((err && err.message) ? err.message : err);
-      document.getElementById('slot-hist-summary').innerText = '⚠️ 履歴を取得できませんでした';
-      document.getElementById('slot-hist-limit-note').innerText = '';
-      if (msg.indexOf('未対応のアクション') !== -1) {
-        document.getElementById('slot-hist-tbody').innerHTML =
-          '<tr><td colspan="3" style="white-space:normal; padding:16px; color:#dc2626; font-weight:bold; line-height:1.5;">この接続先のGASが旧バージョンのため、スロット履歴取得に未対応です。<br>GAS側の「コード.gs」を最新版へ更新し、新バージョンでデプロイしてください。</td></tr>';
-      } else {
-        document.getElementById('slot-hist-tbody').innerHTML =
-          `<tr><td colspan="3" style="white-space:normal; padding:16px; color:#dc2626; font-weight:bold;">エラー: ${escapeHtml(msg)}</td></tr>`;
-      }
-    });
-}
-
-function updateSlotHistorySortButtons() {
-  const map = {
-    wins: 'hist-sort-wins',
-    recent: 'hist-sort-recent',
-    order: 'hist-sort-order'
-  };
-  Object.keys(map).forEach(k => {
-    const btn = document.getElementById(map[k]);
-    if (btn) btn.className = 'hist-sort-btn' + (slotHistorySortMode === k ? ' active' : '');
-  });
-}
-
-function setSlotHistorySort(mode) {
-  if (mode !== 'wins' && mode !== 'recent' && mode !== 'order') return;
-  slotHistorySortMode = mode;
-  updateSlotHistorySortButtons();
-  if (lastSlotHistoryData) {
-    renderSlotHistoryModal();
-  }
-}
-
-function renderSlotHistoryModal() {
-  const data = lastSlotHistoryData || { items: [], fairLimit: 0, slotMode: 'normal' };
-  const items = Array.isArray(data.items) ? data.items.slice() : [];
-  const limit = Number(data.fairLimit) || 0;
-
-  const totalCount = items.length;
-  const reachedCount = (limit > 0) ? items.filter(it => (Number(it.wins) || 0) >= limit).length : 0;
-
-  const summaryEl = document.getElementById('slot-hist-summary');
-  const noteEl = document.getElementById('slot-hist-limit-note');
-  if (limit > 0) {
-    summaryEl.innerText = `計 ${totalCount}名（うち上限到達 ${reachedCount}名）`;
-    noteEl.innerText = `現在の上限設定: ${limit}回まで`;
-  } else {
-    summaryEl.innerText = `計 ${totalCount}名`;
-    noteEl.innerText = '現在の上限設定: 上限なし';
-  }
-
-  if (items.length === 0) {
-    document.getElementById('slot-hist-tbody').innerHTML =
-      '<tr><td colspan="3" style="text-align:center; padding:20px; color:#64748b; font-weight:bold;">まだスロット履歴がありません</td></tr>';
-    return;
-  }
-
-  if (slotHistorySortMode === 'wins') {
-    items.sort((a, b) => {
-      const diff = (Number(b.wins) || 0) - (Number(a.wins) || 0);
-      if (diff !== 0) return diff;
-      const cmpTime = String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
-      if (cmpTime !== 0) return cmpTime;
-      return (Number(b.order) || 0) - (Number(a.order) || 0);
-    });
-  } else if (slotHistorySortMode === 'recent') {
-    items.sort((a, b) => {
-      const cmpTime = String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
-      if (cmpTime !== 0) return cmpTime;
-      return (Number(b.order) || 0) - (Number(a.order) || 0);
-    });
-  } else {
-    items.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
-  }
-
-  document.getElementById('slot-hist-tbody').innerHTML = items.map(it => {
-    const wins = Number(it.wins) || 0;
-    const isReached = (limit > 0 && wins >= limit);
-    const trCls = isReached ? ' class="hist-row-reached"' : '';
-    const winCls = 'hist-wins-cell' + (isReached ? ' hist-wins-reached' : '');
-    const winDisp = isReached ? `${wins}回 (上限)` : `${wins}回`;
-    return `<tr${trCls}>
-      <td style="font-weight:800;">${escapeHtml(it.name)}</td>
-      <td class="${winCls}">${escapeHtml(winDisp)}</td>
-      <td style="font-size:0.76rem; color:#475569;">${escapeHtml(it.lastAt)}</td>
-    </tr>`;
-  }).join('');
-}
-
-function syncColorInputs(from) {
-  const picker = document.getElementById('set-hl-picker');
-  const hex = document.getElementById('set-hl-hex');
-  const preview = document.getElementById('set-hl-preview');
-  let activeHex = picker.value;
-  if (from === 'picker') {
-    hex.value = picker.value.toLowerCase();
-    activeHex = picker.value;
-  } else {
-    let v = String(hex.value || '').trim();
-    if (/^[0-9a-fA-F]{6}$/.test(v)) v = '#' + v;
-    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-      picker.value = v.toLowerCase();
-      activeHex = v.toLowerCase();
+  async function confirmDeleteLogRow(rowNum) {
+    if (!confirm('行' + rowNum + 'を完全に削除しますか？')) return;
+    try {
+      var dash = await callGasApi('deleteLogRow', [rowNum]);
+      applyDashboardData(dash);
+      renderLogEditList();
+      showToast('🗑️ 削除しました');
+    } catch (err) {
+      alert('削除エラー：' + err.message);
     }
   }
-  preview.style.background = activeHex;
-  preview.style.color = isLightHexColor(activeHex) ? '#0f172a' : '#ffffff';
-}
 
-function openSettingsModal() {
-  const s = state.settings;
-  if (!s) {
-    showToast('⏳ データを読み込み中です。GAS接続を確認してください');
-    return;
+  async function runTransferAndPostBackup() {
+    if (!confirm('③ D/F/G各シートへ転記し、修正後バックアップ（後）を保存しますか？')) return;
+    try {
+      showToast('📤 転記＆後BKを実行中…', 5000);
+      var res = await callGasApi('executeTransferAndPostBackup', []);
+      alert(res.message || '転記と後BKが完了しました。');
+    } catch (err) {
+      alert('エラー：' + err.message);
+    }
   }
 
-  const hl = s.highlightColor || '#fff9b1';
-  document.getElementById('set-hl-picker').value = hl;
-  document.getElementById('set-hl-hex').value = hl;
-  const preview = document.getElementById('set-hl-preview');
-  preview.style.background = hl;
-  preview.style.color = isLightHexColor(hl) ? '#0f172a' : '#ffffff';
-
-  document.getElementById('set-slotEnabled').value = (s.slotEnabled === false) ? 'false' : 'true';
-  document.getElementById('set-reelStyle').value = s.reelStyle || activeReelStyle || 'legacy';
-
-  const snd = s.sounds ? Object.assign({}, DEFAULT_SOUNDS, s.sounds) : activeSounds;
-  document.getElementById('snd-spin').value = snd.spin || 'basic';
-  document.getElementById('snd-ok').value = snd.ok || 'basic';
-  document.getElementById('snd-win').value = snd.win || 'basic';
-  document.getElementById('snd-fanfare').value = snd.fanfare || 'basic';
-  document.getElementById('snd-buzzer').value = snd.buzzer || 'basic';
-
-  document.getElementById('set-slotMode').value = s.slotMode;
-  document.getElementById('p-n-seven').value = s.normalProb.seven;
-  document.getElementById('p-n-sakura').value = s.normalProb.sakura;
-  document.getElementById('p-n-bar').value = s.normalProb.bar;
-  document.getElementById('p-n-bell').value = s.normalProb.bell;
-  document.getElementById('p-n-grape').value = s.normalProb.grape;
-  document.getElementById('p-n-cherry').value = s.normalProb.cherry;
-  document.getElementById('p-f-seven').value = s.fairProb.seven;
-  document.getElementById('p-f-sakura').value = s.fairProb.sakura;
-  document.getElementById('p-f-bar').value = s.fairProb.bar;
-  document.getElementById('p-f-bell').value = s.fairProb.bell;
-  document.getElementById('p-f-grape').value = s.fairProb.grape;
-  document.getElementById('p-f-cherry').value = s.fairProb.cherry;
-  document.getElementById('set-fairLimit').value = String(s.fairLimit);
-  document.getElementById('set-jackpotTarget').value = s.jackpotTarget;
-  document.getElementById('set-penaltyMode').value = s.penaltyMode;
-
-  const delaySec = Math.round(((Number(s.slotDelayMs) || 0) / 1000) * 100) / 100;
-  document.getElementById('set-slotDelaySec').value = delaySec;
-
-  document.getElementById('set-pauseSeconds').value = s.pauseSeconds;
-  document.getElementById('set-fLabel').value = s.fLabel;
-  document.getElementById('set-gLabel').value = s.gLabel;
-
-  for (let i = 1; i <= 4; i++) {
-    const lk = (s.customLinks && s.customLinks[i - 1]) ? s.customLinks[i - 1] : { name: '', url: '' };
-    document.getElementById('cl-name-' + i).value = lk.name || '';
-    document.getElementById('cl-url-' + i).value = lk.url || '';
-  }
-
-  renderSettingsVersionFoot();
-  openModal('modal-settings');
-}
-
-function saveSettingsFromModal() {
-  const soundsPayload = {
-    spin: document.getElementById('snd-spin').value,
-    ok: document.getElementById('snd-ok').value,
-    win: document.getElementById('snd-win').value,
-    fanfare: document.getElementById('snd-fanfare').value,
-    buzzer: document.getElementById('snd-buzzer').value
-  };
-  saveLocalSounds(soundsPayload);
-
-  const chosenReelStyle = document.getElementById('set-reelStyle').value === 'modern' ? 'modern' : 'legacy';
-  saveLocalReelStyle(chosenReelStyle);
-
-  const customLinks = [];
-  for (let i = 1; i <= 4; i++) {
-    customLinks.push({
-      slot: i,
-      name: document.getElementById('cl-name-' + i).value,
-      url: document.getElementById('cl-url-' + i).value
-    });
-  }
-
-  let hlHex = String(document.getElementById('set-hl-hex').value || '').trim();
-  if (!/^#?[0-9a-fA-F]{6}$/.test(hlHex)) {
-    hlHex = document.getElementById('set-hl-picker').value || '#fff9b1';
-  }
-  if (hlHex.charAt(0) !== '#') hlHex = '#' + hlHex;
-
-  const rawDelaySec = parseFloat(document.getElementById('set-slotDelaySec').value);
-  const delayMs = (!isNaN(rawDelaySec) && rawDelaySec >= 0) ? Math.round(rawDelaySec * 1000) : 0;
-
-  const payload = {
-    highlightColor: hlHex.toLowerCase(),
-    slotEnabled: document.getElementById('set-slotEnabled').value !== 'false',
-    reelStyle: chosenReelStyle,
-    slotMode: document.getElementById('set-slotMode').value,
-    normalProb: {
-      seven: document.getElementById('p-n-seven').value,
-      sakura: document.getElementById('p-n-sakura').value,
-      bar: document.getElementById('p-n-bar').value,
-      bell: document.getElementById('p-n-bell').value,
-      grape: document.getElementById('p-n-grape').value,
-      cherry: document.getElementById('p-n-cherry').value
-    },
-    fairProb: {
-      seven: document.getElementById('p-f-seven').value,
-      sakura: document.getElementById('p-f-sakura').value,
-      bar: document.getElementById('p-f-bar').value,
-      bell: document.getElementById('p-f-bell').value,
-      grape: document.getElementById('p-f-grape').value,
-      cherry: document.getElementById('p-f-cherry').value
-    },
-    fairLimit: document.getElementById('set-fairLimit').value,
-    jackpotTarget: document.getElementById('set-jackpotTarget').value,
-    penaltyMode: document.getElementById('set-penaltyMode').value,
-    slotDelayMs: delayMs,
-    pauseSeconds: document.getElementById('set-pauseSeconds').value,
-    fLabel: document.getElementById('set-fLabel').value,
-    gLabel: document.getElementById('set-gLabel').value,
-    customLinks: customLinks,
-    sounds: soundsPayload
-  };
-
-  closeModal('modal-settings');
-  showBusy('⏳ 設定を保存中です...');
-  callGasApi('saveSettings', [payload])
-    .then(function(dash) {
-      hideBusy();
-      applyDashboard(dash);
-      showToast('✅ 設定を保存しました');
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    })
-    .catch(function(err) {
-      hideBusy();
-      alert(err.message || err);
-      if (!isAlertLocked) setTimeout(() => focusScanInput(), 50);
-    });
-}
-
-function confirmResetSlotHistory() {
-  if (!confirm('スロット履歴（満遍なく当選のカウント）をすべてリセットしますか？')) return;
-  showBusy('⏳ リセット中...');
-  callGasApi('resetSlotHistory', [])
-    .then(function(res) { hideBusy(); showToast('✅ ' + res.message); })
-    .catch(function(err) { hideBusy(); alert(err.message || err); });
-}
-
-// =========================================================================
-// 締め作業 ①〜⑥
-// =========================================================================
-function runPreBackup() {
-  if (!confirm('① ログを修正する前の生データを「修正前BK」としてGoogleドライブへ保存しますか？')) return;
-  showBusy('💾 修正前BKを保存中です...');
-  callGasApi('savePreBackup', [])
-    .then(function(res) { hideBusy(); alert('✅ ' + res.message); })
-    .catch(function(err) { hideBusy(); alert('BK保存エラー: ' + (err.message || err)); });
-}
-
-function openLogEditModal() {
-  const rev = (state.rows || []).slice().reverse();
-  const wrap = document.getElementById('log-edit-list');
-  if (rev.length === 0) {
-    wrap.innerHTML = '<div style="text-align:center; color:#64748b; padding:20px;">打刻データがありません</div>';
-  } else {
-    wrap.innerHTML = rev.map(r => `
-      <div style="border:1px solid #cbd5e1; border-radius:8px; padding:8px; background:${r.isRed ? '#fff1f2' : '#f8fafc'};">
-        <div style="font-size:0.78rem; font-weight:800; margin-bottom:4px;">
-          行${r.rowNum}：<span class="${r.isRed ? 'td-red' : ''}">${escapeHtml(r.d)}</span>
-        </div>
-        <div style="display:flex; gap:5px;">
-          <input type="text" id="edit-e-${r.rowNum}" value="${escapeHtml(r.e)}" style="flex:1; padding:6px; font-size:0.82rem; border:1px solid #94a3b8; border-radius:6px;">
-          <button type="button" class="mini-btn" onclick="saveEditedRow(${r.rowNum})">修正</button>
-          <button type="button" class="mini-btn" style="background:#fee2e2; color:#dc2626; border-color:#fca5a5;" onclick="removeLogRow(${r.rowNum})">削除</button>
-        </div>
-      </div>`).join('');
-  }
-  openModal('modal-log-edit');
-}
-
-function saveEditedRow(rowNum) {
-  const val = document.getElementById('edit-e-' + rowNum).value;
-  showBusy('⏳ 再照合・更新中です...');
-  callGasApi('updateLogEntry', [rowNum, val])
-    .then(function(dash) {
-      hideBusy();
-      applyDashboard(dash);
-      openLogEditModal();
-      showToast('✅ 行' + rowNum + 'を修正・再照合しました');
-    })
-    .catch(function(err) { hideBusy(); alert(err.message || err); });
-}
-
-function removeLogRow(rowNum) {
-  if (!confirm('行' + rowNum + 'を完全に削除しますか？')) return;
-  showBusy('⏳ 削除中です...');
-  callGasApi('deleteLogRow', [rowNum])
-    .then(function(dash) {
-      hideBusy();
-      applyDashboard(dash);
-      openLogEditModal();
-      showToast('🗑️ 行' + rowNum + 'を削除しました');
-    })
-    .catch(function(err) { hideBusy(); alert(err.message || err); });
-}
-
-function runTransferAndPostBackup() {
-  if (!confirm('③ 修正後の確定データを各シート（D・F・G列）へ転記し、「修正後BK」を保存しますか？')) return;
-  showBusy('📂 各シートへ転記 ＆ 修正後BK保存中...');
-  callGasApi('executeTransferAndPostBackup', [])
-    .then(function(res) { hideBusy(); alert('✅ ' + res.message); })
-    .catch(function(err) { hideBusy(); alert('転記・BKエラー: ' + (err.message || err)); });
-}
-
-function colNumToLetter(n) {
-  let s = '';
-  while (n > 0) {
-    let rem = (n - 1) % 26;
-    s = String.fromCharCode(65 + rem) + s;
-    n = Math.floor((n - 1) / 26);
-  }
-  return s;
-}
-
-function openWinnerModal() {
-  openModal('modal-winner');
-  document.getElementById('winner-stats-badge').innerText = '⏳ 読み込み中...';
-  document.getElementById('winner-jump-bar').innerHTML = '';
-  document.getElementById('winner-editor-body').innerHTML = '<div style="padding:20px; text-align:center; font-weight:bold;">⏳ 当選者シート全体を読み込んでいます...</div>';
-  callGasApi('getWinnerSheetForEditor', [])
-    .then(function(data) {
-      lastWinnerData = data;
+  async function openWinnerEditorModal() {
+    openModal('modal-winner-editor');
+    $('winner-editor-top').innerHTML = '';
+    $('winner-editor-list').innerHTML = '読み込み中…';
+    try {
+      var data = await callGasApi('getWinnerSheetForEditor', []);
       renderWinnerEditor(data);
-    })
-    .catch(function(err) {
-      document.getElementById('winner-stats-badge').innerText = '⚠️ エラー';
-      document.getElementById('winner-editor-body').innerText = 'エラー: ' + (err.message || err);
-    });
-}
-
-function toggleWinnerViewMode() {
-  winnerViewMode = (winnerViewMode === 'table') ? 'card' : 'table';
-  document.getElementById('winner-view-toggle').innerText =
-    (winnerViewMode === 'table') ? '🗂️ カード表示に切替' : '📊 表形式に戻す';
-  if (lastWinnerData) renderWinnerEditor(lastWinnerData);
-}
-
-function jumpToWinnerCol(colNum) {
-  const el = document.getElementById('w-col-anchor-' + colNum);
-  if (el) el.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
-}
-
-function renderWinnerEditor(data) {
-  if (data && data.ssUrl) document.getElementById('winner-ss-direct').href = data.ssUrl;
-  const body = document.getElementById('winner-editor-body');
-  const jumpBar = document.getElementById('winner-jump-bar');
-  const statsEl = document.getElementById('winner-stats-badge');
-  const rawCols = (data && data.columns) ? data.columns : [];
-
-  const activeCols = rawCols.filter(c => {
-    const hasCustomHeader = c.header && !/^列\d+$/.test(c.header);
-    return hasCustomHeader || (c.items && c.items.length > 0);
-  });
-
-  if (activeCols.length === 0) {
-    statsEl.innerText = '全 0列';
-    jumpBar.innerHTML = '';
-    body.innerHTML = '<div style="padding:20px; text-align:center; color:#64748b;">表示できるデータがありません。</div>';
-    return;
+    } catch (err) {
+      $('winner-editor-list').innerHTML = '<div style="color:#dc2626; font-weight:700;">取得エラー：' + escapeHtml(err.message) + '</div>';
+    }
   }
 
-  winnerCellStore = {};
-  winnerColHeaderStore = {};
-  const rowSet = new Set();
-  let totalItems = 0;
-  const colMaxRow = {};
+  function renderWinnerEditor(data) {
+    if (data && data.ssUrl) {
+      $('winner-editor-top').innerHTML =
+        '<a class="dest-link-btn" href="' + escapeHtml(data.ssUrl) + '" target="_blank" rel="noopener noreferrer">🏆 当選者スプレッドシートを直接開く ↗</a>';
+    }
 
-  activeCols.forEach(col => {
-    winnerColHeaderStore[col.col] = col.header;
-    let maxR = 1;
-    (col.items || []).forEach(it => {
-      const key = it.row + '_' + it.col;
-      winnerCellStore[key] = it;
-      rowSet.add(it.row);
-      totalItems++;
-      if (it.row > maxR) maxR = it.row;
-    });
-    colMaxRow[col.col] = maxR;
-  });
+    var cols = (data && data.columns) || [];
+    if (cols.length === 0) {
+      $('winner-editor-list').innerHTML = '<div class="sub-note">データがありません。</div>';
+      return;
+    }
 
-  const sortedRows = Array.from(rowSet).sort((a, b) => a - b);
-  statsEl.innerText = `全 ${activeCols.length}列 ／ ${totalItems}件表示中`;
-  jumpBar.innerHTML = activeCols.map(col => {
-    const letter = colNumToLetter(col.col);
-    return `<button type="button" class="jump-pill" onclick="jumpToWinnerCol(${col.col})">${letter}: ${escapeHtml(col.header)} (${col.items.length})</button>`;
-  }).join('');
-
-  if (winnerViewMode === 'table') {
-    let html = '<table class="winner-grid-table"><thead><tr><th class="col-row-num">行</th>';
-    activeCols.forEach(col => {
-      const letter = colNumToLetter(col.col);
-      html += `<th id="w-col-anchor-${col.col}"><div style="font-size:0.68rem; color:#93c5fd;">${letter}列 (${col.items.length}件)</div><div>${escapeHtml(col.header)}</div></th>`;
-    });
-    html += '</tr></thead><tbody>';
-
-    sortedRows.forEach(rNum => {
-      html += `<tr><td class="col-row-num">${rNum}</td>`;
-      activeCols.forEach(col => {
-        const key = rNum + '_' + col.col;
-        const it = winnerCellStore[key];
-        if (it) {
-          const bgStyle = it.highlighted ? ` style="background:${escapeHtml(it.bgColor)};"` : '';
-          html += `<td${bgStyle}><div class="w-cell-inner">
-            <span class="w-cell-txt">${it.highlighted ? '✅ ' : ''}${escapeHtml(it.value)}</span>
-            <span class="w-cell-acts">
-              <button type="button" class="w-mini-act" onclick="editWinnerByKey('${key}')">✏️</button>
-              <button type="button" class="w-mini-act del" onclick="deleteWinnerByKey('${key}')">🗑️</button>
-            </span></div></td>`;
-        } else {
-          html += `<td style="background:#fafafa;"></td>`;
-        }
-      });
-      html += '</tr>';
-    });
-
-    html += `<tr><td class="col-row-num">＋</td>`;
-    activeCols.forEach(col => {
-      const nextRow = (colMaxRow[col.col] || 1) + 1;
-      html += `<td><button type="button" class="w-add-cell-btn" onclick="addWinnerToCol(${nextRow}, ${col.col})">＋ ${colNumToLetter(col.col)}列に追加</button></td>`;
-    });
-    html += '</tr></tbody></table>';
-    body.innerHTML = html;
-  } else {
-    body.innerHTML = '<div style="padding:8px;">' + activeCols.map(col => {
-      const letter = colNumToLetter(col.col);
-      const nextRow = (colMaxRow[col.col] || 1) + 1;
-      const itemsHtml = col.items.length === 0
-        ? '<div style="font-size:0.78rem; color:#94a3b8; margin-bottom:4px;">（対象なし）</div>'
-        : col.items.map(it => {
-            const key = it.row + '_' + it.col;
-            const bgVal = it.highlighted ? escapeHtml(it.bgColor) : '#ffffff';
-            return `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px; padding:5px 6px; margin-bottom:4px; border-radius:6px; border:1px solid #cbd5e1; background:${bgVal};">
-              <span style="font-size:0.84rem; font-weight:bold; word-break:break-all; color:#0f172a;">${it.highlighted ? '✅ ' : ''}${escapeHtml(it.value)}</span>
-              <div style="display:flex; gap:4px; flex-shrink:0;">
-                <button type="button" class="w-mini-act" onclick="editWinnerByKey('${key}')">編集</button>
-                <button type="button" class="w-mini-act del" onclick="deleteWinnerByKey('${key}')">削除</button>
-              </div></div>`;
+    $('winner-editor-list').innerHTML = cols.map(function (colObj) {
+      var itemsHtml = colObj.items.length === 0
+        ? '<div class="sub-note">（登録なし）</div>'
+        : colObj.items.map(function (it) {
+            var bgStyle = it.highlighted ? 'background:' + escapeHtml(it.bgColor) + ';' : '';
+            var keyId = 'win-cell-' + it.row + '-' + it.col;
+            return (
+              '<div style="display:flex; gap:5px; align-items:center; margin-bottom:6px;">' +
+                '<input type="text" id="' + keyId + '" class="form-input" style="height:34px; font-size:0.84rem; ' + bgStyle + '" value="' + escapeHtml(it.value) + '">' +
+                '<button type="button" class="btn primary" style="padding:6px 9px; font-size:0.78rem;" onclick="saveWinnerCell(' + it.row + ',' + it.col + ')">保存</button>' +
+                '<button type="button" class="btn danger" style="padding:6px 9px; font-size:0.78rem;" onclick="deleteWinnerCell(' + it.row + ',' + it.col + ')">削除</button>' +
+              '</div>'
+            );
           }).join('');
-      return `<div id="w-col-anchor-${col.col}" style="margin-bottom:10px; padding:8px; background:#f8fafc; border-radius:8px; border:1px solid #cbd5e1;">
-        <div style="font-weight:900; font-size:0.86rem; color:#1e3a8a; margin-bottom:6px;">${letter}列：${escapeHtml(col.header)}（${col.items.length}件）</div>
-        ${itemsHtml}
-        <button type="button" class="w-add-cell-btn" style="margin-top:4px;" onclick="addWinnerToCol(${nextRow}, ${col.col})">＋ この列に追加</button>
-      </div>`;
-    }).join('') + '</div>';
+
+      return (
+        '<div class="form-section">' +
+          '<div class="form-section-title">' + escapeHtml(colObj.header) + '（' + colObj.items.length + '件）</div>' +
+          itemsHtml +
+        '</div>'
+      );
+    }).join('');
   }
-}
 
-function editWinnerByKey(key) {
-  const it = winnerCellStore[key];
-  if (!it) return;
-  const next = prompt('新しい内容を入力してください（空欄にすると削除）:', it.value);
-  if (next === null) return;
-  saveWinnerCellUpdate(it.row, it.col, next, '✅ 更新しました');
-}
-
-function deleteWinnerByKey(key) {
-  const it = winnerCellStore[key];
-  if (!it) return;
-  if (!confirm('「' + it.value + '」を当選者管理シートから削除しますか？')) return;
-  saveWinnerCellUpdate(it.row, it.col, '', '🗑️ 削除しました');
-}
-
-function addWinnerToCol(row, col) {
-  const headerName = winnerColHeaderStore[col] || ('列' + col);
-  const val = prompt('「' + headerName + '」に追加するIDまたは名前を入力してください:', '');
-  if (val === null || !val.trim()) return;
-  saveWinnerCellUpdate(row, col, val.trim(), '✅ 追加しました');
-}
-
-function saveWinnerCellUpdate(row, col, newValue, toastMsg) {
-  showBusy('⏳ 当選者シートを更新中...');
-  callGasApi('updateWinnerSheetCell', [row, col, newValue])
-    .then(function(data) {
-      hideBusy();
-      lastWinnerData = data;
+  async function saveWinnerCell(row, col) {
+    var input = $('win-cell-' + row + '-' + col);
+    if (!input) return;
+    try {
+      showToast('💾 保存＆キャッシュ更新中…');
+      var data = await callGasApi('updateWinnerSheetCell', [row, col, input.value]);
       renderWinnerEditor(data);
-      showToast(toastMsg);
-    })
-    .catch(function(err) { hideBusy(); alert(err.message || err); });
-}
+      showToast('✅ 当選者シートを更新しました');
+    } catch (err) {
+      alert('更新エラー：' + err.message);
+    }
+  }
 
-function runResetTodayLog() {
-  if (!confirm('⑥ 本日の打刻ログをすべて初期化します。\n①前BK・③転記＆後BK・⑤当選者整理は終わっていますか？')) return;
-  if (!confirm('本当によろしいですか？2行目以降のデータがすべて消去されます。')) return;
-  showBusy('🗑️ 打刻ログを初期化中です...');
-  callGasApi('resetTodayLog', [])
-    .then(function(dash) {
-      hideBusy();
-      clearAlertFlashState();
-      applyDashboard(dash);
-      document.getElementById('recent-name').innerText = '待機中...';
-      document.getElementById('recent-notif').innerText = '';
-      document.getElementById('recent-card').className = 'recent-card';
-      showToast('✅ 本日の打刻ログを初期化しました');
-    })
-    .catch(function(err) { hideBusy(); alert(err.message || err); });
-}
+  async function deleteWinnerCell(row, col) {
+    if (!confirm('この当選者セルを削除しますか？')) return;
+    try {
+      showToast('🗑️ 削除＆キャッシュ更新中…');
+      var data = await callGasApi('updateWinnerSheetCell', [row, col, '']);
+      renderWinnerEditor(data);
+      showToast('🗑️ 削除しました');
+    } catch (err) {
+      alert('削除エラー：' + err.message);
+    }
+  }
 
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+  async function runResetTodayLog() {
+    if (!confirm('⑥ 本日の打刻ログをすべて初期化し、キャッシュもリセットしますか？\n（※必ず転記と後BKが終わってから実行してください）')) return;
+    if (!confirm('本当によろしいですか？初期化すると元に戻せません。')) return;
+    try {
+      showToast('🗑️ 初期化中…');
+      var dash = await callGasApi('resetTodayLog', []);
+      applyDashboardData(dash);
+      showToast('✅ 本日の打刻ログとキャッシュを初期化しました');
+    } catch (err) {
+      alert('エラー：' + err.message);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // 起動処理
+  // -----------------------------------------------------------------------
+  async function bootApp() {
+    try {
+      state.muted = localStorage.getItem(LS_KEYS.MUTE) === '1';
+      var cachedStyle = localStorage.getItem(LS_KEYS.REEL_STYLE_CACHE);
+      if (cachedStyle === 'modern' || cachedStyle === 'legacy') {
+        state.settings.reelStyle = cachedStyle;
+      }
+    } catch (e) {}
+
+    updateMuteButtonUI();
+    loadAppRegistry();
+    applyScreenRotationUI();
+    renderSlotAppearanceIdle();
+    startPollingLoop();
+
+    // 初回操作でAudioContextのロックを解除
+    document.addEventListener('pointerdown', function unlockOnce() {
+      ensureAudioCtx();
+      document.removeEventListener('pointerdown', unlockOnce);
+    }, { passive: true });
+
+    if (state.gasUrl) {
+      showToast('🔄 最新データを読み込み中…', 2000);
+      await refreshCachesAndDashboard(false);
+    } else {
+      updateConnectionBadge(false);
+      openGasUrlModal();
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // グローバル公開（HTML onclick ＆ device.js 連携用）
+  // -----------------------------------------------------------------------
+  window.cycleScreenRotation = cycleScreenRotation;
+  window.switchTab = switchTab;
+  window.openModal = openModal;
+  window.closeModal = closeModal;
+  window.openGasUrlModal = openGasUrlModal;
+  window.saveAndTestGasUrl = saveAndTestGasUrl;
+  window.selectRegisteredApp = selectRegisteredApp;
+  window.renameRegisteredApp = renameRegisteredApp;
+  window.deleteRegisteredApp = deleteRegisteredApp;
+  window.clearSavedGasUrl = clearSavedGasUrl;
+  window.copyShareSetupLink = copyShareSetupLink;
+  window.toggleAutoPollPause = toggleAutoPollPause;
+  window.triggerManualCacheRefresh = triggerManualCacheRefresh;
+  window.submitScanFromInput = submitScanFromInput;
+  window.toggleSoundMute = toggleSoundMute;
+  window.handleSlotBoxTap = handleSlotBoxTap;
+  window.toggleLatestDone = toggleLatestDone;
+  window.handleRowStatusChange = handleRowStatusChange;
+  window.handleToggleRowDone = handleToggleRowDone;
+  window.quickToggleSlotEnabled = quickToggleSlotEnabled;
+  window.openSettingsModal = openSettingsModal;
+  window.saveSettingsFromModal = saveSettingsFromModal;
+  window.runResetSlotHistory = runResetSlotHistory;
+  window.openSlotHistoryModal = openSlotHistoryModal;
+  window.setSlotHistorySort = setSlotHistorySort;
+  window.runPreBackup = runPreBackup;
+  window.openLogEditModal = openLogEditModal;
+  window.saveEditedLogRow = saveEditedLogRow;
+  window.confirmDeleteLogRow = confirmDeleteLogRow;
+  window.runTransferAndPostBackup = runTransferAndPostBackup;
+  window.openWinnerEditorModal = openWinnerEditorModal;
+  window.saveWinnerCell = saveWinnerCell;
+  window.deleteWinnerCell = deleteWinnerCell;
+  window.runResetTodayLog = runResetTodayLog;
+
+  // device.js 向けブリッジ
+  window.showToast = showToast;
+  window.isScanBlocked = isScanBlocked;
+  window.isAlertLocked = isAlertLocked;
+  window.handleExternalScan = handleExternalScan;
+
+  document.addEventListener('DOMContentLoaded', bootApp);
+})();
